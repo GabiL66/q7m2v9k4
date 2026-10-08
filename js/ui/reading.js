@@ -1,0 +1,98 @@
+// 阅读页（电脑和手机都有）：往阅读表格的 Want 页加一条想看的东西——标题、类型（就是那个表格的各页）、
+// 风格（🎉 爽 / 😊 成长 / 👀 好奇）、Note。标题边打边搜所有页里已经有的，免得重复。不显示整个清单，只显示对得上的。
+
+import * as store from "../store.js";
+import * as sync from "../sync.js";
+import * as reading from "../reading.js";
+import { esc, on } from "../dom.js";
+import { toast } from "./common.js";
+
+let query = "";   // 标题框里正在打的字
+let vibe = "";
+let type = "";
+
+function matchesHTML() {
+  if (!reading.titleKey(query)) return "";
+  const hits = reading.search(query);
+  if (!hits.length) return '<p class="rnone">Not in your list yet.</p>';
+  const same = hits.some((h) => reading.titleKey(h.title) === reading.titleKey(query));
+  return '<p class="rhead">' + (same ? "Already in your list" : "Similar") + "</p><ul>" + hits.map((r) =>
+    "<li><b>" + esc(r.title) + "</b>" + (r.tab ? ' <span class="rtype">' + esc(r.tab) + "</span>" : "") + (r.want ? ' <span class="rtype want">Want</span>' : "") +
+    (r.mark ? " " + esc(r.mark) : "") + (r.when ? ' <span class="rwhen">' + esc(r.when) + "</span>" : "") +
+    (r.queued ? " <em>sending…</em>" : "") + (r.note ? "<small>" + esc(r.note) + "</small>" : "") + "</li>").join("") + "</ul>";
+}
+
+function statusText() {
+  const R = reading.state();
+  if (!store.setting("reading")?.url) return "Paste your reading Sheet's link above first.";
+  if (R.error) return R.error;
+  const n = R.pending.length;
+  return (R.at ? R.rows.length + " in your list" : "Loading your list…") + (n ? " · " + n + " waiting to send" : "");
+}
+
+export function readingHTML(phone) {
+  const head = phone
+    ? '<header class="phead"><div class="l"><a class="nav" href="#today">‹ Today</a></div></header><header class="page-head"><div><h2>Reading</h2></div></header>'
+    : '<header class="page-head"><div><h2>Reading</h2></div></header>';
+  // 还没连阅读表格：就在这里贴一次链接（手机上也行），贴进去就存
+  const connect = store.setting("reading")?.url ? "" :
+    '<label class="field rconnect"><span>Link to your reading Sheet</span><input data-reading-link inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://docs.google.com/spreadsheets/d/…/edit"></label>' +
+    '<p class="hint">Paste it once. The Sheet stays private — your own Google account opens it.</p>';
+  return '<div class="reading' + (phone ? " phone-reading" : "") + '">' + head + connect +
+    '<form class="radd" autocomplete="off">' +
+    '<input name="title" class="rtitle" data-keep="read-title" placeholder="What do you want to read or watch?" enterkeyhint="next" value="' + esc(query) + '">' +
+    '<div class="rmatches" data-rmatches>' + matchesHTML() + "</div>" +
+    '<div class="rrow"><span class="rlab">Vibe</span><div class="vibes">' + reading.VIBES.map((v) =>
+      '<button type="button" class="vibe' + (vibe === v ? " on" : "") + '" data-act="vibe" data-v="' + v + '">' + v + "</button>").join("") + "</div></div>" +
+    '<div class="rrow"><span class="rlab">Type</span><div class="rtypes">' + reading.TYPES.map((t) =>
+      '<button type="button" class="chip' + (type === t ? " on" : "") + '" data-act="rtype" data-v="' + esc(t) + '">' + esc(t) + "</button>").join("") + "</div></div>" +
+    '<textarea name="note" data-keep="read-note" rows="2" placeholder="Note"></textarea>' +
+    '<div class="rgo"><span class="hint" data-rstatus>' + esc(statusText()) + '</span><button class="btn cta" type="submit">Add</button></div>' +
+    "</form></div>";
+}
+
+// 阅读表格的链接：贴进来就存（不用等离开输入框）。电脑 Settings 里那个框也走这里
+export function saveReadingLink(value) {
+  const url = String(value || "").trim();
+  if (url === (store.setting("reading")?.url || "")) return false;
+  if (url && !reading.looksLikeSheet(url)) return false;
+  store.setSetting("reading", { url });
+  if (url) toast("Reading Sheet linked");
+  sync.sync();
+  return true;
+}
+
+export function initReading(rerender) {
+  on(document, "input", "[data-reading-link]", (e, el) => { if (reading.looksLikeSheet(el.value)) saveReadingLink(el.value); });
+  on(document, "change", "[data-reading-link]", (e, el) => { if (!saveReadingLink(el.value) && el.value.trim()) toast("That doesn't look like a Google Sheets link"); });
+  on(document, "input", ".radd [name=title]", (e, el) => {
+    query = el.value;
+    const box = document.querySelector("[data-rmatches]");
+    if (box) box.innerHTML = matchesHTML();
+  });
+  on(document, "click", ".radd [data-act]", (e, el) => {
+    if (el.dataset.act === "vibe") vibe = vibe === el.dataset.v ? "" : el.dataset.v;
+    if (el.dataset.act === "rtype") type = type === el.dataset.v ? "" : el.dataset.v;
+    rerender();
+  });
+  on(document, "submit", ".radd", (e, form) => {
+    e.preventDefault();
+    const title = form.title.value.trim();
+    if (!title) { form.title.focus(); return; }
+    const hit = reading.exists(title);
+    if (hit) { toast("Already in your list" + (hit.tab ? " (" + hit.tab + ")" : "")); return; }
+    reading.add({ title, type, vibe, note: form.note.value });
+    toast("Added " + title);
+    query = ""; vibe = ""; type = "";
+    form.title.value = ""; form.note.value = "";
+    rerender();
+    sync.sync();
+  });
+  // 表格回来说「已经有了」的
+  reading.subscribe(() => {
+    const d = reading.takeDupes();
+    if (d.length) toast("Already in your list: " + d.map((x) => x.title + (x.tab ? " (" + x.tab + ")" : "")).join(", "));
+    const s = document.querySelector("[data-rstatus]");
+    if (s) s.textContent = statusText();
+  });
+}
