@@ -3,8 +3,9 @@
 //   Boxes（#meals/boxes）：一个 Box = 一顿 = 几样东西（用量随便写），低中高自动定（也能手动），一天份大概多少钱；
 //     左边一排架子按类别摆着常买的东西，拖到 Box 上就加进去；每类最前面的「Any meat」= 随便哪种，买的时候再挑
 //   Plan（#meals）：最上面是「下次采购」的单子；然后是这一轮还没看的打折、这周和下周按天放 Box、之后四周四个框粗排
+//     （到了周五，这周就不再显示，从下周看起）
 //   Restock（#meals/restock）：规律要换 / 要补的非食物：价格、每隔多久、下次哪天；最上面按月列接下来三个月要花的
-// 「下次采购」手机上也有：顶栏的 🛒 进 #shop，只列要买的东西（不写价钱和说明，写了备注的带着备注），在超市里打勾；下面挤着一张「Coming up」。
+// 「下次采购」手机上也有：顶栏的 🛒 进 #shop，只列要买的东西（不写价钱和说明），在超市里打勾，单子下面是这次采购的备注（只看）；下面挤着一张「Coming up」。
 
 import * as store from "../store.js";
 import * as M from "../meals.js";
@@ -15,7 +16,6 @@ import { openModal, closeModal, modalSheet } from "./modal.js";
 
 let editing = null;   // 编辑框：{ kind: ing / box / day / prefs, id, draft, date }
 let saleFor = "";     // 打折卡片里正在填打折价的那样
-let noteFor = "";     // 采购单上正在写备注的那行：周|id
 
 const TABS = [["plan", "Plan", "#meals"], ["boxes", "Boxes", "#meals/boxes"], ["groceries", "Groceries", "#meals/groceries"], ["restock", "Restock", "#meals/restock"]];
 const tabOf = () => { const t = location.hash.split("/")[1] || "plan"; return TABS.some(([k]) => k === t) ? t : "plan"; };
@@ -25,6 +25,10 @@ const fmtDue = (d, T) => fmtDay(d) + (d.slice(0, 4) === T.slice(0, 4) ? "" : ", 
 const dueText = (d, T) => { const n = diffDays(T, d); return n > 1 ? "in " + n + " days" : n === 1 ? "tomorrow" : n === 0 ? "today" : -n + (n === -1 ? " day late" : " days late"); };
 const slotName = (s) => (M.SLOTS.find(([k]) => k === s) || ["", "Any"])[1];
 const weekOf = (date) => startOfWeek(date, store.prefs().weekStartsOn);
+// 排餐和采购从哪一周看起：到了周五就是下一周（见 M.planStart）
+const planWeek = (today) => M.planStart(today, store.prefs().weekStartsOn);
+// 一周相对今天叫什么
+const weekName = (start, today) => ["This week", "Next week", "Week after"][diffDays(weekOf(today), start) / 7] || "Week of " + fmtShort(start);
 const sel = (yes) => (yes ? " selected" : "");
 const afterRender = (fn) => requestAnimationFrame(() => setTimeout(fn, 0));   // 重画排在下一帧
 const dot = (lv) => '<i class="lvdot lv-' + lv + '" title="' + M.levelName(lv) + '"></i>';
@@ -78,7 +82,7 @@ export function shopHTML(c, phone) {
 
 // 手机顶栏 🛒 上的数字：下次采购还剩几样没买
 export function shopCount(c) {
-  const L = M.nextShop(store.meals(), c.today, weekOf(c.today), store.mealPrefs().shopDay);
+  const L = M.nextShop(store.meals(), c.today, planWeek(c.today), store.mealPrefs().shopDay);
   return L ? L.open : 0;
 }
 
@@ -95,14 +99,14 @@ function introHTML(onGroceries = false) {
 
 function nextShopHTML(D, c, phone) {
   const pr = store.mealPrefs();
-  const L = M.nextShop(D, c.today, weekOf(c.today), pr.shopDay);
-  if (!L) return '<section class="mcard nextshop"><header><h3>Next shop</h3><span class="msub">This week and next are both shopped or skipped.</span></header></section>';
+  const L = M.nextShop(D, c.today, planWeek(c.today), pr.shopDay);
+  if (!L) return '<section class="mcard nextshop"><header><h3>Next shop</h3><span class="msub">Both weeks are shopped or skipped.</span></header></section>';
   const n = diffDays(c.today, L.shop);
   const when = n > 1 ? fmtDay(L.shop) + " · in " + n + " days" : n === 1 ? "Tomorrow" : n === 0 ? "Today" : fmtDay(L.shop) + " · " + -n + (n === -1 ? " day ago" : " days ago");
   const budget = Number(pr.budget) || 0;
   // 手机上只列东西：勾、名字、买几次；家里有的不列
   const phoneRow = (r) => r.state === "have" ? "" : '<li class="' + (r.state ? "st-" + r.state : "") + '"><label class="lname"><input type="checkbox" data-got="bought" data-week="' + L.start + '" data-id="' + esc(r.ing.id) + '" data-n="' + r.n + '"' + (r.state === "bought" ? " checked" : "") + ">" +
-    "<span>" + esc(r.ing.name) + "</span>" + (r.n > 1 ? '<b class="lx">×' + r.n + "</b>" : "") + "</label>" + (r.note ? '<small class="lmemo-text">' + esc(r.note) + "</small>" : "") + "</li>";
+    "<span>" + esc(r.ing.name) + "</span>" + (r.n > 1 ? '<b class="lx">×' + r.n + "</b>" : "") + "</label></li>";
   const row = (r) => {
     const id = esc(r.ing.id);
     const picks = r.ing.any ? M.onSaleNow(D, L.shop).filter((i) => i.cat === r.ing.any).map((i) => esc(i.name)) : [];
@@ -110,18 +114,12 @@ function nextShopHTML(D, c, phone) {
       : r.ing.keep ? "always in stock · one buy ≈ " + M.lastsOf(r.ing) + " days"
         : r.uses ? r.uses + (r.uses === 1 ? " day" : " days") + " of meals · one buy ≈ " + M.lastsOf(r.ing) + " days" : "",
       r.extra ? "added by hand" + (phone ? "" : ' <button type="button" class="link" data-act="shop-unadd" data-week="' + L.start + '" data-id="' + id + '">remove</button>') : ""].filter(Boolean);
-    // 备注：笼统的（Any meat、蔬菜这种一直要有的）直接给一格写；别的点「+ note」才出来
-    const key = L.start + "|" + r.ing.id, at = ' data-week="' + L.start + '" data-id="' + id + '"', loose = r.ing.any || r.ing.keep;
-    const writing = noteFor === key || (loose && !r.state);
-    if (!writing && !r.note) note.push('<button type="button" class="link" data-act="memo-edit"' + at + ">+ note</button>");
-    const memo = writing ? '<input class="lmemo" data-memo' + at + ' data-keep="memo-' + esc(key) + '" value="' + esc(r.note) + '" placeholder="' + (loose ? "Which ones? Note it here" : "Note") + '" autocomplete="off" aria-label="Note for ' + esc(r.ing.name) + '">'
-      : r.note ? '<button type="button" class="lmemo-text" data-act="memo-edit"' + at + ' title="Edit note">' + esc(r.note) + "</button>" : "";
     return '<li class="' + (r.state ? "st-" + r.state : "") + '">' +
       '<label class="lname"><input type="checkbox" data-got="bought" data-week="' + L.start + '" data-id="' + id + '" data-n="' + r.n + '"' + (r.state === "bought" ? " checked" : "") + (r.state === "have" ? " disabled" : "") + ">" +
       dot(M.levelOf(r.ing)) + "<span>" + esc(r.ing.name) + "</span>" + (r.n > 1 ? '<b class="lx">×' + r.n + "</b>" : "") + "</label>" +
       '<span class="lp">' + (r.state === "have" ? "—" : money(r.cost)) + (r.sale && r.state !== "have" ? ' <em class="saletag">sale</em>' : "") + "</span>" +
       '<button type="button" class="link" data-act="got-have" data-week="' + L.start + '" data-id="' + id + '">' + (r.state === "have" ? "Need it" : "Have it") + "</button>" +
-      (note.length ? '<small class="lnote">' + note.join(" · ") + "</small>" : "") + memo + "</li>";
+      (note.length ? '<small class="lnote">' + note.join(" · ") + "</small>" : "") + "</li>";
   };
   return '<section class="mcard nextshop"><header><h3>Next shop</h3>' +
     '<span class="shopday ' + (L.open && n <= 1 ? (n < 0 ? "late" : "due") : "") + '">' + esc(when) + "</span>" +
@@ -131,16 +129,25 @@ function nextShopHTML(D, c, phone) {
     (L.count ? '<button type="button" class="btn primary" data-act="shopped" data-week="' + L.start + '">Mark shopped</button>' : "") + "</header>" +
     (L.count ? '<div class="mstores">' + L.groups.map((g) => "<section><h4>" + esc(g.store || "Anywhere") + (phone ? "" : " <small>" + money(g.cost) + "</small>") + "</h4><ul>" + g.items.map(phone ? phoneRow : row).join("") + "</ul></section>").join("") + "</div>"
       : '<p class="msub">Nothing to buy yet — put some boxes on the days.</p>') +
+    memoHTML(D, L.start, phone) +
     (L.staples.length && !phone ? '<p class="msub staples">Have at home: ' + L.staples.map((i) => esc(i.name)).join(", ") + "</p>" : "") +
     (phone || !Object.keys(D.ing).length ? "" : '<div class="shopadd"><select data-act="shop-add" data-week="' + L.start + '" aria-label="Add a grocery to this shop">' + ingOptions(D, "", "+ Add something else…") + "</select></div>") +
     "</section>";
+}
+
+// 这次采购的备注：电脑上一个大框，边写边存；手机上只看。标了 Shopped 就清掉
+function memoHTML(D, start, phone) {
+  const text = M.shopMemo(D, D.week[start]);
+  if (phone) return text.trim() ? '<p class="shopmemo-text">' + esc(text) + "</p>" : "";
+  return '<label class="shopmemo"><span class="msub">Notes for this shop</span><textarea data-act="shop-memo" data-week="' + start + '" data-keep="smemo-' + start + '" rows="' + Math.min(8, Math.max(3, text.split("\n").length + 1)) +
+    '" placeholder="Which vegetables, which cut, anything to look for… Cleared when you mark it shopped.">' + esc(text) + "</textarea></label>";
 }
 
 // ---------- Plan ----------
 
 function planHTML(D, c) {
   if (!Object.keys(D.box).length && !Object.keys(D.ing).length) return introHTML();
-  const pr = store.mealPrefs(), w0 = weekOf(c.today);
+  const pr = store.mealPrefs(), w0 = planWeek(c.today), w1 = addDays(w0, 7);
   const boxes = Object.values(D.box).sort(bySlot);
   const palette = boxes.length
     ? '<div class="mpalette"><span class="msub">Drag a box onto a day</span>' + boxes.map((b) =>
@@ -148,7 +155,7 @@ function planHTML(D, c) {
       dot(M.boxLevel(D, b)) + "<b>" + esc(b.name || "Untitled") + "</b><small>" + slotName(b.slot) + "</small></span>").join("") + "</div>"
     : '<p class="mpalette msub">No boxes yet — <a href="#meals/boxes">make a few</a>, then drag them onto the days.</p>';
   return nextShopHTML(D, c, false) + dealsHTML(D, c.today) + palette +
-    weekHTML(D, c, w0, "This week", pr) + weekHTML(D, c, addDays(w0, 7), "Next week", pr) +
+    weekHTML(D, c, w0, weekName(w0, c.today), pr) + weekHTML(D, c, w1, weekName(w1, c.today), pr) +
     '<section class="mlater"><h3 class="msec">Later <small>four weeks, rough</small></h3><div class="rgrid">' +
     [2, 3, 4, 5].map((k) => roughHTML(D, addDays(w0, 7 * k), pr, boxes)).join("") + "</div></section>";
 }
@@ -512,7 +519,7 @@ function markShopped(start) {
   store.saveWeek(start, (w) => {
     const got = { ...(w.got || {}) };
     for (const g of L.groups) for (const r of g.items) if (!r.state) got[r.ing.id] = { n: r.n };
-    return { got, shopped: true };
+    return { got, shopped: true, memo: "", notes: undefined };   // 这次的备注用完了：连同旧的逐条备注一起清掉
   }, "Shopped ✓");
 }
 
@@ -523,7 +530,7 @@ export function initMeals(rerender) {
     if (el.matches("select, textarea, input")) return;
     const act = el.dataset.act, D = store.meals(), T = store.today();
     const start = el.dataset.week, id = el.dataset.id;
-    if (act === "meal-examples") store.addMealExamples(M.examples(T, weekOf(T), D));
+    if (act === "meal-examples") store.addMealExamples(M.examples(T, planWeek(T), D));
     else if (act === "meal-clear-examples") store.clearMealExamples();
     else if (act === "meal-prefs") openEditor({ kind: "prefs" });
     else if (act === "meal-import") openEditor({ kind: "import" });
@@ -557,11 +564,6 @@ export function initMeals(rerender) {
     else if (act === "new-sup") openEditor({ kind: "sup", id: "", draft: { name: "", store: "", price: "", n: "", unit: "m", next: "", note: "" } });
     else if (act === "edit-sup") openEditor({ kind: "sup", id });
     else if (act === "sup-done" && D.sup[id]) { const next = M.nextAfter(T, D.sup[id]); store.saveMeal("sup", { ...D.sup[id], next }, D.sup[id].name + ": next " + fmtDue(next, T)); }
-    else if (act === "memo-edit") {
-      noteFor = start + "|" + id;
-      rerender();
-      afterRender(() => [...document.querySelectorAll(".meals input[data-memo]")].find((x) => x.dataset.week === start && x.dataset.id === id)?.focus());
-    }
   });
   // 卡片、表格行、日子用键盘也能打开
   on(document, "keydown", ".meals [role=button], .meals tr[data-act]", (e, el) => { if (e.key === "Enter" && e.target === el) el.click(); });
@@ -576,18 +578,8 @@ export function initMeals(rerender) {
       return { got };
     });
   });
-  // 采购单上的备注：回车 / 点到别处就存进这一周；清空 = 删掉。不重画，免得正要点的下一个按钮被换掉
-  on(document, "change", ".meals input[data-memo]", (e, el) => {
-    const id = el.dataset.id, text = el.value.trim();
-    noteFor = "";
-    store.saveWeek(el.dataset.week, (w) => {
-      const notes = { ...(w.notes || {}) };
-      if (text) notes[id] = text;
-      else delete notes[id];
-      return { notes };
-    }, "", { quiet: true });
-  });
-  on(document, "focusout", ".meals input[data-memo]", () => { noteFor = ""; });
+  // 这次采购的备注：边写边存进这一周（不重画）
+  on(document, "input", ".meals textarea[data-act=shop-memo]", (e, el) => store.saveWeek(el.dataset.week, { memo: el.value, notes: undefined }, "", { quiet: true }));
   on(document, "change", ".meals select[data-act=shop-add]", (e, el) => {
     const id = el.value;
     if (id) store.saveWeek(el.dataset.week, (w) => ({ extra: { ...(w.extra || {}), [id]: (Number(w.extra?.[id]) || 0) + 1 } }));

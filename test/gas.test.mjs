@@ -42,6 +42,7 @@ test("setup migrates the old sheet in place, with backups, and slims it", () => 
   const head = tasks.header();
   assert.equal(head[head.length - 1], "Description");
   assert.ok(head.includes("ID") && head.includes("Project ID") && head.includes("Optional") && head.includes("Times"));
+  assert.ok(head.includes("Deep") && head.indexOf("Deep") < head.indexOf("Description"), "the new Deep column is added before Description");
   assert.ok(!head.includes("Category") && !head.includes("Done order"), head.join(","));
   const rows = tasks.objects();
   assert.equal(rows.length, 6);
@@ -83,11 +84,11 @@ test("pull, push, LWW, delete and log merge", () => {
   const raw = (body) => JSON.parse(g.sandbox.doPost({ postData: { contents: JSON.stringify(body) } }).getContent());
   assert.equal(raw({ secret: "CHANGE_ME", pull: true, push: { rows: { tasks: [{ id: "x", title: "old", updated: 9e15 }] } } }).error, "old page", "pages without a version are turned away");
   const hello = g.post({ secret: "CHANGE_ME" });
-  assert.equal(hello.version, 3);
+  assert.equal(hello.version, 5);
   const all = g.post({ secret: "CHANGE_ME", pull: true, since: 0 });
   assert.equal(all.ok, true);
   assert.equal(all.pull.tables.tasks.length, 6);
-  assert.deepEqual(Object.keys(all.pull.tables).sort(), ["items", "log", "projects", "settings", "tasks"]);
+  assert.deepEqual(Object.keys(all.pull.tables).sort(), ["friends", "items", "log", "meets", "projects", "settings", "tasks"]);
   const t0 = all.pull.tables.tasks.find((t) => t.title === "Laundry");
   assert.equal(t0.date, "2026-10-02");
   assert.equal(t0.status, "");
@@ -279,7 +280,7 @@ test("reading: every tab is searched, new things go to a Want tab, duplicates ar
   assert.deepEqual(res.added, ["a2"]);
   assert.deepEqual(res.dupes.map((d) => d.id + " " + d.tab), ["a1 Book", "a3 TV", "a4 TV"], "any tab counts; 《》, case and spaces don't matter");
   const want = book.getSheetByName("Want");
-  assert.deepEqual(want.header(), ["Added", "Name", "Type", "Vibe", "Note"]);
+  assert.deepEqual(want.header(), ["Name", "Type", "Vibe", "Note"], "no date column");
   const row = want.objects()[0];
   assert.equal(row.Name, "The Bear");
   assert.equal(row.Type, "TV");
@@ -293,4 +294,227 @@ test("reading: every tab is searched, new things go to a Want tab, duplicates ar
   assert.equal(bear.mark, "😊");
   assert.equal(bear.note, "=chef");
   assert.ok(!again.types.includes("Want"));
+});
+
+test("reading: finished things land on their own tab, and leave Want", () => {
+  const g = load(CODE);
+  g.sandbox.setup();
+  const url = "https://docs.google.com/spreadsheets/d/1ReadingSheetIdAbcdefghijklmnop/edit";
+  const book = g.spreadsheet("https://docs.google.com/spreadsheets/d/1ReadingSheetIdAbcdefghijklmnop");
+  const tab = (name, rows) => { const sh = book.insertSheet(name); rows.forEach((r, i) => r.forEach((v, j) => sh.put(i + 1, j + 1, v))); return sh; };
+  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const books = tab("Book", [["Year", "Month", "Name", "这一切真的值得吗"], [2023, "July", "Book one", "🥰", "book", "old note"], [2026, "February", "Book two", "🥰", "English"]]);
+  books.dropdown(1, ["2023", "2024", "2025", "2026"]).dropdown(2, months).dropdown(4, ["🥰", "🎉", "💢"]).dropdown(5, ["book", "English", "image", "EN/book"]);
+  const tv = tab("TV", [[], ["Year", "Month", "Name", "这一切真的值得吗"], [2025, "May", "Severance", "🎉", "", "great"], ["", "", "奥本海默"], ["", "", "Later show", "", "", "kept"]]);
+  const fiction = tab("Fiction", [["Year", "Month", "Name", "这一切真的值得吗"], [2026, 5, "Novel one", "🎉"]]);
+  tab("Game", [["Year", "Month", "Name", "这一切真的值得吗"], [2026, "May", "Game one", "🥰", "played"], [2026, "June", "Game two", "", "completed"], [2026, "June", "Game three", "", "played"]]);
+  // 以前建的 Want 页带着 Added 那一列：照样能用，新加的那一格空着
+  const want = tab("Want", [["Added", "Name", "Type", "Vibe", "Note"], ["2026-10-01", "The Bear", "TV", "😊", "chef"]]);
+  g.post({ secret: "CHANGE_ME", push: { rows: { settings: [{ key: "reading", value: { url }, updated: 1 }] } } });
+  const read = (reading) => g.post({ secret: "CHANGE_ME", reading }).reading;
+  const line = (sh, n) => sh.rows[n - 1].slice(0, 6);
+
+  assert.deepEqual(read({ add: [{ id: "w1", title: "Dune", type: "Book" }] }).added, ["w1"]);
+  assert.deepEqual(line(want, 3), ["", "Dune", "Book", "", "", ""], "no date written any more");
+  assert.deepEqual(read({ list: true }).kinds, { Book: ["book", "English", "image", "EN/book"], Game: ["played", "completed"] }, "the dropdown's options, or what the column already holds");
+
+  const res = read({ list: true, done: [
+    { id: "d1", title: "Book three", tab: "book", year: 2026, month: 10, mark: "🎉", kind: "EN/book", note: "=fun" },
+    { id: "d2", title: "The Bear", tab: "TV", year: 2026, month: 10, mark: "🥰", note: "finale" },
+    { id: "d3", title: "奥本海默", tab: "Book", year: 2026, month: 3, mark: "💢" },
+    { id: "d4", title: "severance", tab: "TV", year: 2026, month: 1 },
+    { id: "d5", title: "Nowhere", tab: "Films", year: 2026, month: 1 },
+    { id: "d6", title: "Book four", tab: "Book", year: 2027, month: 1, mark: "🥰" },
+    { id: "d7", title: "Novel two", tab: "Fiction", year: 2026, month: 7 }
+  ] });
+  assert.deepEqual(res.logged, ["d1", "d2", "d3", "d7"]);
+  assert.deepEqual(res.dupes.map((d) => d.id + " " + d.tab), ["d4 TV"], "already there with a date");
+  assert.deepEqual(res.failed.map((f) => f.id), ["d5", "d6"]);
+  assert.match(res.failed[0].why, /no Films tab/);
+  assert.match(res.failed[1].why, /Book: the Year dropdown has no "2027"/);
+
+  assert.deepEqual(line(books, 4), [2026, "October", "Book three", "🎉", "EN/book", "=fun"], "right under the last dated row; the note stays text");
+  assert.equal(books.getLastRow(), 4, "the one the dropdown refused left nothing behind");
+  assert.deepEqual(line(tv, 3), [2025, "May", "Severance", "🎉", "", "great"]);
+  assert.deepEqual(line(tv, 4), [2026, "October", "The Bear", "🥰", "", "chef\nfinale"], "a row is put in above the undated ones; the Want note comes along");
+  assert.deepEqual(line(tv, 5), [2026, "March", "奥本海默", "💢", "", ""], "an undated row is filled in where it is, whatever tab was picked");
+  assert.deepEqual(line(tv, 6), ["", "", "Later show", "", "", "kept"]);
+  assert.deepEqual(line(fiction, 3), [2026, 7, "Novel two", "", "", ""], "months the way that tab writes them");
+  assert.deepEqual(want.objects().map((r) => r.Name), ["Dune"], "finished = out of Want");
+  const bear = res.rows.find((r) => r.title === "The Bear");
+  assert.deepEqual([bear.tab, bear.want, bear.when, bear.mark], ["TV", false, "2026 Oct", "🥰"]);
+  assert.ok(!("row" in bear) && !("full" in bear));
+
+  // 把 Added 那一列删掉：之后不会再补回来
+  want.deleteColumn(1);
+  assert.deepEqual(read({ add: [{ id: "w2", title: "Arrival", type: "TV", vibe: "👀" }] }).added, ["w2"]);
+  assert.deepEqual(want.header(), ["Name", "Type", "Vibe", "Note"]);
+  assert.deepEqual(want.objects().map((r) => r.Name + " " + r.Type), ["Dune Book", "Arrival TV"]);
+  // 下拉只是提醒（不拒绝）：照写
+  books.dropdown(1, ["2023", "2024", "2025", "2026"], false);
+  assert.deepEqual(read({ done: [{ id: "d8", title: "Book four", tab: "Book", year: 2027, month: 1 }] }).logged, ["d8"]);
+  assert.deepEqual(line(books, 5), [2027, "January", "Book four", "", "", ""]);
+});
+
+test("deep work: the flag goes up, shows as a tick in the Deep column, and comes back", () => {
+  const g = oldSheet();
+  g.sandbox.setup();
+  const now = Date.now() + 1000;
+  const res = g.post({ secret: "CHANGE_ME", pull: true, since: 0, push: { rows: { tasks: [
+    { id: "deep-1", date: "2026-10-04", title: "Mock test", est: 60, deep: true, updated: now },
+    { id: "deep-2", date: "2026-10-04", title: "Dishes", est: 15, deep: false, updated: now }
+  ] } } });
+  const back = Object.fromEntries(res.pull.tables.tasks.map((t) => [t.id, t]));
+  assert.equal(back["deep-1"].deep, true);
+  assert.equal(back["deep-2"].deep, false);
+  const rows = g.ss.getSheetByName("Tasks").objects();
+  assert.equal(rows.find((r) => r.ID === "deep-1").Deep, true);
+  assert.equal(rows.find((r) => r.ID === "deep-2").Deep, "");
+  assert.equal(back[Object.keys(back).find((k) => back[k].title === "Gym")].deep, false, "old rows are simply not deep");
+});
+
+// ---------- VERSION 5：大类、Friends、季度表、归档 ----------
+
+const SEC = "CHANGE_ME";
+const push = (g, rows, extra = {}) => g.post({ secret: SEC, push: { rows }, ...extra });
+const pullAll = (g) => g.post({ secret: SEC, pull: true, since: 0 }).pull.tables;
+
+test("group: a task can sit right on a project; plan tasks follow their plan's project", () => {
+  const g = load(CODE);
+  g.sandbox.setup();
+  const head = g.ss.getSheetByName("Tasks").header();
+  assert.ok(head.includes("Group") && head.indexOf("Group") < head.indexOf("Description"));
+  push(g, { projects: [{ id: "p1", name: "Deck", group: "Work", updated: 1 }], tasks: [{ id: "t1", date: "2026-10-04", title: "Slides", est: 30, projectId: "p1", group: "Work", updated: 1 }, { id: "t2", date: "2026-10-04", title: "Vacuum", est: 20, group: "Chores", updated: 1 }] });
+  const rows = () => Object.fromEntries(g.ss.getSheetByName("Tasks").objects().map((r) => [r.ID, r]));
+  assert.deepEqual([rows().t1.Project, rows().t1.Group, rows().t2.Project, rows().t2.Group], ["Deck", "Work", "", "Chores"]);
+  assert.equal(pullAll(g).tasks.find((t) => t.id === "t2").group, "Chores");
+  // 只推任务（没动 Projects）：计划名在写入时就填上了，不用整页重填
+  g.sandbox.recount_ = () => { throw new Error("full recount on a tasks-only push"); };
+  const res = push(g, { tasks: [{ id: "t3", date: "2026-10-05", title: "Notes", est: 15, projectId: "p1", group: "Work", updated: 2 }] });
+  assert.equal(res.recount, undefined);
+  assert.equal(rows().t3.Project, "Deck");
+});
+
+test("group: moving a plan to another project refreshes its tasks' Group", () => {
+  const g = load(CODE);
+  g.sandbox.setup();
+  push(g, { projects: [{ id: "p1", name: "Deck", group: "Work", updated: 1 }], tasks: [{ id: "t1", date: "2026-10-04", title: "Slides", est: 30, projectId: "p1", group: "Work", updated: 1 }, { id: "t2", date: "2026-10-04", title: "Vacuum", est: 20, group: "Chores", updated: 1 }] });
+  push(g, { projects: [{ id: "p1", name: "Pitch deck", group: "Build", updated: 5 }] });
+  const rows = Object.fromEntries(g.ss.getSheetByName("Tasks").objects().map((r) => [r.ID, r]));
+  assert.deepEqual([rows.t1.Project, rows.t1.Group, rows.t2.Group], ["Pitch deck", "Build", "Chores"]);
+});
+
+test("friends: your own columns come and go by their header; With and Last are filled in", () => {
+  const g = load(CODE);
+  g.sandbox.setup();
+  assert.deepEqual(g.ss.getSheetByName("Friends").header(), ["Name", "Next", "By", "Last", "ID", "Updated", "Synced"]);
+  // 网页里排好的字段 → 表格里的列（插在 Next 前面）
+  push(g, { settings: [{ key: "friend-fields", value: ["Field A", "Field B"], updated: 1 }] });
+  assert.deepEqual(g.ss.getSheetByName("Friends").header().slice(0, 4), ["Name", "Field A", "Field B", "Next"]);
+  push(g, {
+    friends: [{ id: "f1", name: "Ana", more: { "Field A": "=x", "Field C": "new col" }, next: "send the notes", nextDate: "2026-10-20", updated: 1 }, { id: "f2", name: "Bo", more: {}, updated: 1 }],
+    meets: [{ id: "m1", date: "2026-10-01", friends: ["f1", "f2"], note: "coffee", watch: "moving in May", updated: 1 }, { id: "m2", date: "2026-10-03", friends: ["f1"], note: "call", updated: 1 }, { id: "m3", date: "2999-01-01", friends: ["f2"], note: "planned", updated: 1 }]
+  });
+  const fr = g.ss.getSheetByName("Friends");
+  assert.deepEqual(fr.header().slice(0, 5), ["Name", "Field A", "Field B", "Field C", "Next"]);
+  const ana = fr.objects().find((r) => r.ID === "f1"), bo = fr.objects().find((r) => r.ID === "f2");
+  assert.equal(ana["Field A"], "=x", "kept as text");
+  assert.equal(ana["Field C"], "new col");
+  assert.equal(ana.Next, "send the notes");
+  const iso = (v) => (v instanceof Date ? v.getFullYear() + "-" + String(v.getMonth() + 1).padStart(2, "0") + "-" + String(v.getDate()).padStart(2, "0") : v);
+  assert.equal(iso(ana.Last), "2026-10-03");
+  assert.equal(iso(bo.Last), "2026-10-01", "a planned one in the future isn't the last time");
+  assert.deepEqual(g.ss.getSheetByName("Catch-ups").objects().map((r) => r.With), ["Ana, Bo", "Ana", "Bo"]);
+  const back = pullAll(g);
+  assert.deepEqual(back.friends.find((f) => f.id === "f1").more, { "Field A": "=x", "Field C": "new col" });
+  assert.equal(back.friends.find((f) => f.id === "f1").nextDate, "2026-10-20");
+  assert.deepEqual(back.meets.find((m) => m.id === "m1").friends, ["f1", "f2"]);
+  // 表格里手动加一列、填一格：下次拉下来就在 more 里；只改一个字段不动别的
+  const cols = fr.header();
+  fr.put(1, cols.length + 1, "Typed by hand");
+  fr.put(2, cols.length + 1, "hello");
+  push(g, { friends: [{ id: "f1", more: { "Field A": "changed" }, updated: 9 }] });
+  const again = pullAll(g).friends.find((f) => f.id === "f1");
+  assert.deepEqual(again.more, { "Field A": "changed", "Field C": "new col", "Typed by hand": "hello" });
+  // 删掉一个人：行没了，别的还在
+  g.post({ secret: SEC, push: { deletes: [{ table: "friends", id: "f2", at: Date.now() }] } });
+  assert.deepEqual(g.ss.getSheetByName("Friends").objects().map((r) => r.Name), ["Ana"]);
+});
+
+test("friends: fields and people sent together still get their columns in the order you set", () => {
+  const g = load(CODE);
+  g.sandbox.setup();
+  push(g, { friends: [{ id: "f1", name: "Ana", more: { "Field B": "b", "Field A": "a" }, updated: 1 }], settings: [{ key: "friend-fields", value: ["Field A", "Field B", "Field C"], updated: 1 }] });
+  assert.deepEqual(g.ss.getSheetByName("Friends").header().slice(0, 5), ["Name", "Field A", "Field B", "Field C", "Next"]);
+  assert.equal(g.ss.getSheetByName("Friends").objects()[0]["Field B"], "b");
+});
+
+test("quarter sheet: only the two cells of that day are written", () => {
+  const g = load(CODE);
+  g.sandbox.setup();
+  const url = "https://docs.google.com/spreadsheets/d/1QuarterSheetIdAbcdefghijklmnop/edit#gid=0";
+  const book = g.spreadsheet("https://docs.google.com/spreadsheets/d/1QuarterSheetIdAbcdefghijklmnop");
+  const sh = book.insertSheet("2026 q4");
+  [["", "", "+", "-", "progress", "focus", "read", "note"], ["", 1.25, 116, 50, 70, 0.4, 10, ""],
+    [D("2026-10-09"), 0.99, 93, 34, 65, 0.2, 8, "by hand"], [D("2026-10-10"), 0.57, 40, 38, 10, 0, 6, "by hand"], ["2026-10-11", "", "", "", "", "", "", "keep me"], [D("2026-10-12"), "", "", "", "", "", "", ""]]
+    .forEach((r, i) => r.forEach((v, j) => sh.put(i + 1, j + 1, v)));
+  const ask = (rows) => g.post({ secret: SEC, quarter: { rows } }).quarter;
+  assert.equal(ask([{ date: "2026-10-11", progress: 60, focus: 0.3 }]).error, "no sheet", "no link yet");
+  push(g, { settings: [{ key: "quarter", value: { url, from: "2026-10-11" }, updated: 1 }] });
+  const res = ask([{ date: "2026-10-11", progress: 60, focus: 0.3 }, { date: "2026-10-12", progress: 0, focus: 0 }, { date: "2026-10-13", progress: 5, focus: 0 }, { date: "2027-01-02", progress: 5, focus: 0 }]);
+  assert.deepEqual(res.done, ["2026-10-11", "2026-10-12"]);
+  assert.deepEqual(res.missing.map((m) => m.why), ["No row for 2026-10-13 on 2026 Q4", "No tab named 2027 Q1"]);
+  assert.deepEqual(sh.rows.slice(2, 6).map((r) => [r[4], r[5], r[6], r[7]]), [[65, 0.2, 8, "by hand"], [10, 0, 6, "by hand"], [60, 0.3, "", "keep me"], [0, 0, "", ""]]);
+  assert.deepEqual(sh.rows[1].slice(1, 6), [1.25, 116, 50, 70, 0.4], "the row under the header is left alone");
+  // 只发日期、不带数：什么都不写，只回这一天找不找得到（贴完链接先探一下用）
+  assert.deepEqual(ask([{ date: "2026-10-12" }, { date: "2026-10-20" }]), { done: ["2026-10-12"], missing: [{ date: "2026-10-20", why: "No row for 2026-10-20 on 2026 Q4" }] });
+  assert.deepEqual(sh.rows[5].slice(4, 6), [0, 0], "a look-up without numbers writes nothing");
+  // 没有这个页签、但整个表格就叫这个名字：用第一页
+  const solo = g.spreadsheet("https://docs.google.com/spreadsheets/d/1SoloQuarterIdAbcdefghijklmnopq");
+  solo.name = "2027 Q1";
+  const s1 = solo.insertSheet("Sheet1");
+  [["date", "Progress", "Focus"], [D("2027-01-02"), "", ""]].forEach((r, i) => r.forEach((v, j) => s1.put(i + 1, j + 1, v)));
+  push(g, { settings: [{ key: "quarter", value: { url: "https://docs.google.com/spreadsheets/d/1SoloQuarterIdAbcdefghijklmnopq/edit" }, updated: 2 }] });
+  assert.deepEqual(ask([{ date: "2027-01-02", progress: 42, focus: 0.1 }]).done, ["2027-01-02"]);
+  assert.deepEqual(s1.rows[1].slice(1, 3), [42, 0.1]);
+});
+
+test("archive: old tasks move to the Archive tab, except ones a running plan still counts on", () => {
+  const g = load(CODE);
+  g.sandbox.setup();
+  push(g, {
+    projects: [{ id: "live", name: "Thesis", kind: "total", status: "active", updated: 1 }, { id: "closed", name: "Old course", kind: "total", status: "done", updated: 1 }],
+    items: [{ id: "i1", projectId: "live", title: "Ch 1", est: 600, updated: 1 }, { id: "i2", projectId: "closed", title: "Unit", est: 60, updated: 1 }],
+    tasks: [
+      { id: "a", date: "2024-03-01", title: "=old one", est: 30, status: "done", updated: 1 },
+      { id: "b", date: "2024-03-02", title: "Ch 1 draft", est: 60, status: "done", projectId: "live", itemId: "i1", updated: 1 },
+      { id: "c", date: "2024-03-03", title: "Unit", est: 60, status: "done", projectId: "closed", itemId: "i2", updated: 1 },
+      { id: "d", date: "2025-01-01", title: "New year", est: 10, status: "done", updated: 1 },
+      { id: "e", date: "2024-12-31", title: "Last day", est: 10, updated: 1 }
+    ]
+  });
+  const since = g.post({ secret: SEC, pull: true, since: 0 }).now;
+  const res = g.post({ secret: SEC, pull: true, since, archive: { before: "2025-01-01" } });
+  assert.equal(res.archive.moved, 3);
+  assert.deepEqual(g.ss.getSheetByName("Tasks").objects().map((r) => r.ID), ["b", "d"]);
+  const ar = g.ss.getSheetByName("Archive");
+  assert.deepEqual(ar.header(), g.ss.getSheetByName("Tasks").header());
+  assert.deepEqual(ar.objects().map((r) => r.ID + ":" + r.Task), ["a:=old one", "c:Unit", "e:Last day"]);
+  assert.deepEqual(res.pull.deleted.map((d) => d.table + ":" + d.id).sort(), ["tasks:a", "tasks:c", "tasks:e"], "devices drop them on their next sync");
+  assert.equal(g.post({ secret: SEC, archive: { before: "2025-01-01" } }).archive.moved, 0);
+  assert.equal(g.post({ secret: SEC, archive: { before: "nonsense" } }).archive.moved, 0);
+  // 第二次归档接在后面
+  assert.equal(g.post({ secret: SEC, archive: { before: "2025-06-01" } }).archive.moved, 1);
+  assert.deepEqual(ar.objects().map((r) => r.ID), ["a", "c", "e", "d"]);
+});
+
+test("tidy: delete records older than two weeks are cleared when the page asks", () => {
+  const g = load(CODE);
+  g.sandbox.setup();
+  const del = g.ss.getSheetByName("Deleted");
+  [["tasks", "old", 1, Date.now() - 15 * 864e5], ["tasks", "recent", 1, Date.now() - 13 * 864e5]].forEach((r, i) => r.forEach((v, j) => del.put(i + 2, j + 1, v)));
+  g.post({ secret: SEC, pull: true });
+  assert.equal(del.objects().length, 2, "not on every sync");
+  g.post({ secret: SEC, tidy: true });
+  assert.deepEqual(del.objects().map((r) => r.ID), ["recent"]);
 });

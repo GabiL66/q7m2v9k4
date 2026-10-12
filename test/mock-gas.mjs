@@ -18,17 +18,24 @@ class Range {
   }
   setValues(vals) {
     if (vals.length !== this.nr || vals.some((row) => row.length !== this.nc)) throw new Error(`setValues size mismatch ${vals.length}x${vals[0]?.length} vs ${this.nr}x${this.nc}`);
+    vals.forEach((row, i) => row.forEach((v, j) => this.sh.check(this.c + j, v)));
     vals.forEach((row, i) => row.forEach((v, j) => this.sh.put(this.r + i, this.c + j, v)));
     return this;
   }
-  setValue(v) { this.sh.put(this.r, this.c, v); return this; }
+  setValue(v) { this.sh.check(this.c, v); this.sh.put(this.r, this.c, v); return this; }
+  // 这一列设了下拉（见 Sheet.dropdown）才有
+  getDataValidation() {
+    const d = this.sh.lists[this.c];
+    return d ? { getCriteriaType: () => "VALUE_IN_LIST", getCriteriaValues: () => [d.list.slice(), true], getAllowInvalid: () => !d.strict } : null;
+  }
+  getValue() { return this.sh.cell(this.r, this.c); }
   setNumberFormat(f) { for (let j = 0; j < this.nc; j++) this.sh.fmt[this.c + j] = f; return this; }
   setDataValidation() { return this; }
   clearDataValidations() { return this; }
 }
 
 class Sheet {
-  constructor(ss, name, rows = 1000, cols = 26) { this.ss = ss; this.name = name; this.rows = Array.from({ length: rows }, () => Array(cols).fill("")); this.cols = cols; this.fmt = {}; this.hidden = new Set(); }
+  constructor(ss, name, rows = 1000, cols = 26) { this.ss = ss; this.name = name; this.rows = Array.from({ length: rows }, () => Array(cols).fill("")); this.cols = cols; this.fmt = {}; this.hidden = new Set(); this.lists = {}; }
   getName() { return this.name; }
   getSheetId() { return this.ss.sheets.indexOf(this) * 1000; }
   setName(n) { this.name = n; return this; }
@@ -50,6 +57,7 @@ class Sheet {
   deleteColumn(c) { this.rows.forEach((r) => r.splice(c - 1, 1)); this.cols--; }
   shiftFmt(from, n) { const f = {}; Object.entries(this.fmt).forEach(([k, v]) => { k = Number(k); f[k >= from ? k + n : k] = v; }); this.fmt = f; }
   deleteRow(r) { this.rows.splice(r - 1, 1); this.rows.push(Array(this.cols).fill("")); }
+  deleteRows(r, n) { for (let k = 0; k < n; k++) this.deleteRow(r); }
   insertRowsAfter(r, n) { this.rows.splice(r, 0, ...Array.from({ length: n }, () => Array(this.cols).fill(""))); }
   moveColumns(range, dest) {
     const c = range.c;
@@ -61,6 +69,12 @@ class Sheet {
   hideColumns(c) { this.hidden.add(c); }
   copyTo(ss) { const s = new Sheet(ss, "Copy of " + this.name); s.rows = this.rows.map((r) => r.slice()); s.cols = this.cols; ss.sheets.push(s); return s; }
   // test helpers
+  // 给一列设下拉：strict = 不在选项里的值写不进去（和真表格的「拒绝输入」一样）
+  dropdown(c, list, strict = true) { this.lists[c] = { list, strict }; return this; }
+  check(c, v) {
+    const d = this.lists[c];
+    if (d && d.strict && v !== "" && !d.list.some((x) => String(x) === String(v))) throw new Error("The data that you entered violates the data validation rules set on this cell.");
+  }
   header() { return this.rows[0].filter((v) => v !== ""); }
   objects() {
     const h = this.rows[0];
@@ -69,7 +83,8 @@ class Sheet {
 }
 
 class Spreadsheet {
-  constructor() { this.sheets = []; }
+  constructor(name = "Untitled") { this.sheets = []; this.name = name; }
+  getName() { return this.name; }
   getSheetByName(n) { return this.sheets.find((s) => s.name === n) || null; }
   insertSheet(n) { const s = new Sheet(this, n); this.sheets.push(s); return s; }
   getSheets() { return this.sheets; }
@@ -85,7 +100,7 @@ export function load(codePath, ss = new Spreadsheet()) {
   const pad = (n) => String(n).padStart(2, "0");
   const validation = { requireValueInList() { return this; }, requireValueInRange() { return this; }, build() { return {}; } };
   const sandbox = {
-    SpreadsheetApp: { getActiveSpreadsheet: () => ss, openByUrl: byUrl, openById: (id) => byUrl(Object.keys(others).find((u) => u.includes("/d/" + id)) || "?"), newDataValidation: () => Object.create(validation) },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ss, openByUrl: byUrl, openById: (id) => byUrl(Object.keys(others).find((u) => u.includes("/d/" + id)) || "?"), flush() {}, newDataValidation: () => Object.create(validation) },
     Utilities: { getUuid: () => crypto.randomUUID(), formatDate: (d, tz, f) => (f === "HH:mm" ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     ContentService: { MimeType: { JSON: "json" }, createTextOutput: (s) => ({ setMimeType() { return this; }, getContent: () => s }) },
@@ -94,7 +109,7 @@ export function load(codePath, ss = new Spreadsheet()) {
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(codePath, "utf8"), sandbox);
-  const post = (body) => JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ version: 3, ...body }) } }).getContent());
+  const post = (body) => JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ version: 5, ...body }) } }).getContent());
   // 测试用：再开一个表格（比如阅读记录），网页里填它的链接
   const spreadsheet = (url) => (others[url] = others[url] || new Spreadsheet());
   return { ss, sandbox, logs, post, spreadsheet };

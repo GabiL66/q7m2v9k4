@@ -6,13 +6,13 @@ var SECRET = 'CHANGE_ME';
 // 每张表：页名、主键、[字段, 表头, 类型, 标记]。列按表头文字找，可以挪位置、中间插自己的列。
 // 类型 text / num / date / bool / json / status / pstatus / clock（钟点 09:10，存成文字）。
 // 标记 calc = 脚本自己算，App 不写；hide = setup 时把这列藏起来（右键可取消隐藏）。
-var VERSION = 3;   // 页面和脚本对版本：页面不是这个版本就不收它的数据，免得新旧格式混在一起
+var VERSION = 5;   // 页面和脚本对版本：页面不是这个版本就不收它的数据，免得新旧格式混在一起
 var T = {
-  // 计时记录在 Times 一格里：「09:10-09:40 30m; 20m」
+  // 计时记录在 Times 一格里：「09:10-09:40 30m; 20m」。Project = 挂在哪个计划上（脚本填名字）；Group = 属于哪个大类（可以不挂计划、直接挂在大类上）
   tasks: { sheet: 'Tasks', key: 'id', main: 'title', cols: [
     ['date', 'Date', 'date'], ['title', 'Task', 'text'], ['est', 'Est min', 'num'], ['actual', 'Actual min', 'num'],
-    ['status', 'Status', 'status'], ['reason', 'Reason', 'text'], ['project', 'Project', 'text', 'calc'],
-    ['optional', 'Optional', 'bool'], ['times', 'Times', 'text'], ['order', 'Order', 'num', 'hide'],
+    ['status', 'Status', 'status'], ['reason', 'Reason', 'text'], ['project', 'Project', 'text', 'calc'], ['group', 'Group', 'text'],
+    ['optional', 'Optional', 'bool'], ['deep', 'Deep', 'bool'], ['times', 'Times', 'text'], ['order', 'Order', 'num', 'hide'],
     ['id', 'ID', 'text', 'hide'], ['projectId', 'Project ID', 'text', 'hide'], ['itemId', 'Item ID', 'text', 'hide'],
     ['updated', 'Updated', 'num', 'hide'], ['synced', 'Synced', 'num', 'calc hide'],
     ['desc', 'Description', 'text']] },                               // Description 永远最后一列
@@ -32,13 +32,23 @@ var T = {
     ['updated', 'Updated', 'num', 'hide'], ['synced', 'Synced', 'num', 'calc hide']] },
   // capacity（含每天单独改的 overrides）/ prefs / timer / reading 都是 JSON
   settings: { sheet: 'Settings', key: 'key', cols: [
-    ['key', 'Key', 'text'], ['value', 'Value', 'json'], ['updated', 'Updated', 'num', 'hide'], ['synced', 'Synced', 'num', 'calc hide']] }
+    ['key', 'Key', 'text'], ['value', 'Value', 'json'], ['updated', 'Updated', 'num', 'hide'], ['synced', 'Synced', 'num', 'calc hide']] },
+  // 一行一个人。more = 这页里别的列都算他的资料：表头写什么，网页里那一格就叫什么（自己加列、改表头都行）
+  friends: { sheet: 'Friends', key: 'id', main: 'name', more: true, cols: [
+    ['name', 'Name', 'text'], ['next', 'Next', 'text'], ['nextDate', 'By', 'date'], ['last', 'Last', 'date', 'calc'],
+    ['id', 'ID', 'text', 'hide'], ['updated', 'Updated', 'num', 'hide'], ['synced', 'Synced', 'num', 'calc hide']] },
+  // 每次的记录：哪天、和谁（With 是脚本按 Friend IDs 填的名字）、聊了什么、要记住的
+  meets: { sheet: 'Catch-ups', key: 'id', main: 'note', cols: [
+    ['date', 'Date', 'date'], ['who', 'With', 'text', 'calc'], ['note', 'Notes', 'text'], ['watch', 'Remember', 'text'],
+    ['friends', 'Friend IDs', 'json', 'hide'], ['taskId', 'Task ID', 'text', 'hide'], ['id', 'ID', 'text', 'hide'],
+    ['updated', 'Updated', 'num', 'hide'], ['synced', 'Synced', 'num', 'calc hide']] }
 };
 // 不再用的列：setup 最后删掉
 var DROP = { tasks: ['审核', 'Review', 'Category', 'Done order'], projects: ['Planned min', 'Spent min', 'Progress'] };
 // 平时不用看的页：藏起来（右键页签 → 显示）
 var HIDE = ['Log', 'Settings', 'Deleted', 'Notes'];
-var KEEP_DELETED_DAYS = 90;
+var KEEP_DELETED_DAYS = 14;   // 删除记录只是给还没同步的设备看的；更久没同步的设备会自己整表重拉
+var ARCHIVE = 'Archive';
 var DELETED = 'Deleted';
 var DELETED_HEADER = ['Table', 'ID', 'Deleted at', 'Synced'];
 var STATUS_OUT = { done: 'Done', partial: 'Partial', later: 'Later', drop: 'Drop' };
@@ -51,7 +61,7 @@ var RENAME = {
   '拟定顺序': 'Order', '分类': 'Category', '是否完成': 'Status', '实际次序（自动）': 'Done order',
   '任务描述': 'Description', '可用时长（分钟）': 'Available min'
 };
-var COLORS = ['#C6FF00', '#2F5BFF', '#FF3EA5', '#FF7A1A', '#9B5CFF', '#00C2A8', '#FFC400', '#FF4D4D'];
+var COLORS = ['#3E8E6E', '#3F62B5', '#E07A2B', '#8B62AE', '#E6DCC3', '#9A5A36', '#D2A52E', '#B5413F'];
 
 // ================= 第一次用，以及每次更新代码后：选 setup 点「运行」 =================
 // 老表（Tasks 里还没有 ID 列）会先整页备份成「Backup …」，再原地升级：补列、补 ID、
@@ -76,7 +86,9 @@ function setup() {
   dropColumns_();
   dropGroups_(ss);
   pruneDeleted_();
+  friendCols_();
   recount_();
+  recountFriends_();
   hideSheets_(ss);
   Logger.log(old ? 'Migrated the old sheet. Backups: ' + backupNames_(ss).join(', ') : 'Setup done.');
 }
@@ -302,7 +314,7 @@ function dropGroups_(ss) {
   if (sh) ss.deleteSheet(sh);
 }
 
-// 删除记录只留最近 90 天（按记下来的时间 Synced 算；太久没打开的设备，在设置里点 Reload everything 就好）
+// 删除记录只留最近两周（按记下来的时间 Synced 算；更久没同步的设备，页面会自己整表重拉一次）
 function pruneDeleted_() {
   var sh = deletedSheet_(), data = body_(sh, DELETED_HEADER);
   var cut = Date.now() - KEEP_DELETED_DAYS * 864e5;
@@ -414,6 +426,7 @@ function readAll_(name, fix) {
     }
     var o = {};
     t.cols.forEach(function (c) { if (col[c[0]] >= 0) o[c[0]] = fromCell_(c[2], row[col[c[0]]], tz); });
+    if (t.more) o.more = moreOf_(t, names, row, tz);
     o.id = key;
     out.push(o);
   }
@@ -421,11 +434,55 @@ function readAll_(name, fix) {
   return out;
 }
 
+// ---- 自己加的列（T 里写了 more 的页）：表头不在上面那张清单里的，都读成 more = { 表头: 值 } ----
+
+function known_(t) {
+  var k = {};
+  t.cols.forEach(function (c) { k[c[1]] = true; });
+  return k;
+}
+
+function moreOf_(t, names, row, tz) {
+  var known = known_(t), out = {};
+  names.forEach(function (h, i) {
+    if (!h || known[h]) return;
+    var v = row[i];
+    if (v !== '' && v !== null && v !== undefined) out[h] = day_(v, tz);
+  });
+  return out;
+}
+
+// 缺的列补上（插在 Next 前面，没有 Next 就接在最后），整列设成纯文本
+function moreCols_(name, headers) {
+  var t = T[name], sh = sheetOf_(name), names = head_(sh), known = known_(t);
+  (headers || []).forEach(function (h) {
+    h = String(h === null || h === undefined ? '' : h).trim();
+    if (!h || known[h] || names.indexOf(h) >= 0) return;
+    var at = names.indexOf('Next');
+    if (at >= 0) { sh.insertColumnBefore(at + 1); names.splice(at, 0, h); }
+    else { if (sh.getMaxColumns() < names.length + 1) sh.insertColumnAfter(sh.getMaxColumns()); at = names.length; names.push(h); }
+    sh.getRange(1, at + 1).setValue(h);
+    sh.getRange(2, at + 1, Math.max(sh.getMaxRows() - 1, 1), 1).setNumberFormat('@');
+  });
+}
+
+// Settings 的 friend-fields（网页 Friends 页里排好的那几个名字）→ Friends 页的列
+function friendCols_() {
+  var row = readAll_('settings').filter(function (r) { return r.id === 'friend-fields'; })[0];
+  if (row && Array.isArray(row.value)) moreCols_('friends', row.value);
+}
+
 // 按主键写入：表里那行更新得更晚就不覆盖（Log 例外：两边的份额合并）；
 // 删过的行，除非这次的改动比删除还晚（比如撤销），不再写回来——自动生成的任务删了不会「复活」
 function upsert_(name, rows, now, dead) {
   if (!rows || !rows.length) return 0;
   var t = T[name], sh = sheetOf_(name), tz = tz_();
+  if (t.more) {
+    var extra = [];
+    rows.forEach(function (r) { if (r.more && typeof r.more === 'object') Object.keys(r.more).forEach(function (h) { if (extra.indexOf(h) < 0) extra.push(h); }); });
+    moreCols_(name, extra);
+  }
+  if (name === 'projects') PLAN_NAMES = null;
   var names = head_(sh), col = cols_(t, names), width = names.length;
   var last = sh.getLastRow();
   var data = last > 1 ? sh.getRange(2, 1, last - 1, width).getValues() : [];
@@ -452,6 +509,11 @@ function upsert_(name, rows, now, dead) {
       if (r[c[0]] === undefined && !(fresh && (c[2] === 'kind' || c[2] === 'place'))) return;   // 新行的 Kind / Place 填上默认
       row[col[c[0]]] = toCell_(c[2], r[c[0]]);
     });
+    if (t.more && r.more && typeof r.more === 'object') {
+      Object.keys(r.more).forEach(function (h) { var i = names.indexOf(h); if (i >= 0 && !known_(t)[h]) row[i] = toCell_('text', r.more[h]); });
+    }
+    // 任务 / 条目写进来时顺手把计划的名字填上（不用每次同步整页重填）
+    if ((name === 'tasks' || name === 'items') && col.project >= 0 && col.projectId >= 0) row[col.project] = planNames_()[String(row[col.projectId] || '')] || '';
     if (col[t.key] >= 0) row[col[t.key]] = key;
     if (col.synced >= 0) row[col.synced] = now;
     if (pending) appended[i - data.length] = row;
@@ -540,15 +602,26 @@ function pull_(since) {
 
 // ================= 名字列：Tasks / Items 里显示属于哪个计划 =================
 
+var PLAN_NAMES = null;   // 这一次请求里用的：计划 ID → 名字（Projects 一有改动就作废）
+function planNames_() {
+  if (!PLAN_NAMES) {
+    PLAN_NAMES = {};
+    readAll_('projects').forEach(function (p) { PLAN_NAMES[p.id] = p.name; });
+  }
+  return PLAN_NAMES;
+}
+
 function plan_(t) {
   if (t.status === 'done') return Number(t.est) || 0;
   return t.status === 'partial' ? Math.min(Number(t.actual) || 0, Number(t.est) || 0) : 0;
 }
 
 function recount_() {
-  var name = {};
-  readAll_('projects').forEach(function (p) { name[p.id] = p.name; });
+  var name = {}, group = {};
+  readAll_('projects').forEach(function (p) { name[p.id] = p.name; group[p.id] = p.group || p.name || ''; });
   writeCol_('tasks', 'project', function (r) { return name[r.projectId] || ''; });
+  // 挂了计划的任务，大类跟着计划走（计划改了大类、大类改了名，这里补上）；直接挂在大类上的不动
+  writeCol_('tasks', 'group', function (r) { return r.projectId && group[r.projectId] !== undefined ? group[r.projectId] : r.group; });
   writeCol_('items', 'project', function (r) { return name[r.projectId] || ''; });
   return { ok: true, projects: Object.keys(name).length };
 }
@@ -570,9 +643,22 @@ function writeCol_(name, field, f) {
   sh.getRange(2, c + 1, values.length, 1).setValues(values);
 }
 
+// Friends / Catch-ups 里脚本自己填的两列：With = 这次有谁（名字），Last = 这个人最近一次是哪天（到今天为止）
+function recountFriends_() {
+  var name = {}, last = {}, today = Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd');
+  readAll_('friends').forEach(function (f) { name[f.id] = f.name; });
+  readAll_('meets').forEach(function (m) {
+    if (!m.date || m.date > today) return;
+    (m.friends || []).forEach(function (id) { if (!last[id] || m.date > last[id]) last[id] = m.date; });
+  });
+  writeCol_('meets', 'who', function (r) { return (r.friends || []).map(function (id) { return name[id] || ''; }).filter(String).join(', '); });
+  writeCol_('friends', 'last', function (r) { return last[r.id] || ''; });
+}
+
 // 在编辑器里选 recount 点运行：立刻把名字列重填一次
 function recount() {
   var r = recount_();
+  recountFriends_();
   Logger.log(JSON.stringify(r));
   return r;
 }
@@ -644,11 +730,14 @@ function migrate_() {
 
 // ================= 阅读：你自己的另一个表格 =================
 // 链接在 Settings 的 reading（{url}），在网页电脑端的设置里填一次（整个表格的链接就行）。
-// 那个表格每一页是一种（Book、PodCast、TV……），各页找到写着 Name 的那一行当表头，下面每一行是一条。
-// 网页加的东西只放进单独一页 Want（没有就建一个），别的页不改不删；查重和搜索看所有页。
+// 那个表格每一页是一种（Book、PodCast、TV……），各页找到写着 Name 的那一行当表头，下面每一行是一条：
+// Year | Month | Name | 评价（emoji）| 小类（Book 页的 book / English…，Game 页的 played / completed）| 备注。
+// 网页加的「想看的」只放进单独一页 Want（没有就建一个）；「看完的」写进它自己那一页，Want 里那行拿掉。
+// 别的格子不改不删；查重和搜索看所有页。
 var READING_TAB = 'Want';
-var READING_HEAD = ['Added', 'Name', 'Type', 'Vibe', 'Note'];
+var READING_HEAD = ['Name', 'Type', 'Vibe', 'Note'];
 var NAME_HEADS = ['name', 'title', '名字', '书名', '名称', '标题'];
+var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 function readingBook_() {
   var row = readAll_('settings').filter(function (r) { return r.id === 'reading'; })[0];
@@ -670,23 +759,30 @@ function readingHead_(sh) {
   return null;
 }
 
+// 表头下面的所有行
+function readingBody_(sh, h) {
+  return h && h.last > h.row ? sh.getRange(h.row + 1, 1, h.last - h.row, h.width).getValues() : [];
+}
+
 // 查重用：不分大小写，书名号、引号、空格都不算
 function titleKey_(s) {
   return String(s || '').toLowerCase().replace(/[《》<>「」『』"'“”‘’\s]+/g, '');
 }
 
-// 一页里的每一条：名字、哪一页、什么时候（Year + Month 或 Added）、名字后面那格的 emoji、再后面的几格当备注
-function readingRows_(sh, tz) {
-  var h = readingHead_(sh);
-  if (!h || h.last <= h.row) return [];
+function cellText_(v, tz) {
+  if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, tz || tz_(), 'yyyy-MM-dd');
+  return typeof v === 'number' && v % 1 === 0 ? String(v) : String(v === null || v === undefined ? '' : v).trim();
+}
+
+// 一页里的每一条：名字、哪一页、什么时候（Year + Month）、名字后面那格的 emoji、再后面的几格当备注。
+// row（第几行）和 full（Want 页没截短的备注）只给这边用，不发给网页
+function readingRows_(sh, tz, h, body) {
+  if (!h) return [];
   var at = function (k) { return h.cols.indexOf(k); };
   var year = at('year'), month = at('month'), added = at('added'), vibe = at('vibe'), type = at('type'), note = at('note');
-  var str = function (v) {
-    if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
-    return typeof v === 'number' && v % 1 === 0 ? String(v) : String(v === null ? '' : v).trim();
-  };
+  var str = function (v) { return cellText_(v, tz); };
   var mine = sh.getName() === READING_TAB;
-  return sh.getRange(h.row + 1, 1, h.last - h.row, h.width).getValues().map(function (r) {
+  return body.map(function (r, n) {
     var title = str(r[h.name]);
     if (!title) return null;
     var when = added >= 0 ? str(r[added]) : [year >= 0 ? str(r[year]) : '', month >= 0 ? str(r[month]).slice(0, 3) : ''].join(' ').trim();
@@ -695,18 +791,49 @@ function readingRows_(sh, tz) {
     var rest = [];
     if (mine) { if (note >= 0 && str(r[note])) rest.push(str(r[note])); }
     else for (var i = h.name + 2; i < r.length; i++) if (str(r[i])) rest.push(str(r[i]));
-    return { title: title, tab: mine && type >= 0 && str(r[type]) ? str(r[type]) : sh.getName(), want: mine, when: when, mark: mark, note: rest.join(' · ').slice(0, 120) };
+    var full = rest.join(' · ');
+    return { title: title, tab: mine && type >= 0 && str(r[type]) ? str(r[type]) : sh.getName(), want: mine, when: when, mark: mark, note: full.slice(0, 120), row: h.row + 1 + n, full: mine ? full : '' };
   }).filter(Boolean);
 }
 
-// Want 页：没有就建，表头缺的补在后面；返回 { sh, col: {added, name, type, vibe, note} }
+// 这一格的下拉：{ list: 选项, strict: 不在选项里的值收不收 }；没有下拉（或不是列表型的）是 null
+function dropdown_(cell) {
+  try {
+    var rule = cell.getDataValidation();
+    if (!rule) return null;
+    var kind = String(rule.getCriteriaType()), args = rule.getCriteriaValues();
+    var vals = kind === 'VALUE_IN_LIST' ? args[0] : kind === 'VALUE_IN_RANGE' ? [].concat.apply([], args[0].getValues()) : null;
+    if (!vals) return null;
+    vals = vals.map(function (v) { return cellText_(v, ''); }).filter(function (v) { return v !== ''; });
+    return vals.length ? { list: vals, strict: !rule.getAllowInvalid() } : null;
+  } catch (err) { return null; }
+}
+
+// 小类那一格（名字后面第二格）能选什么：有下拉就照下拉的选项；没有就看这一列写过什么（短的、就那么几种才算）
+function readingKinds_(sh, h, body) {
+  var col = h.name + 2;
+  if (col >= sh.getMaxColumns()) return [];
+  var drop = dropdown_(sh.getRange(h.row + 1, col + 1));
+  if (drop) return drop.list;
+  var count = {}, names = [];
+  for (var i = 0; i < body.length; i++) {
+    var v = cellText_(body[i][col], '');
+    if (!v) continue;
+    if (v.length > 12) return [];
+    if (!count[v]) { count[v] = 0; names.push(v); }
+    count[v]++;
+  }
+  return names.length > 6 ? [] : names.sort(function (a, b) { return count[b] - count[a]; });
+}
+
+// Want 页：没有就建，表头缺的补在后面；返回 { sh, col: {name, type, vibe, note} }
 function wantTab_(book) {
   var sh = book.getSheetByName(READING_TAB);
   if (!sh) {
     sh = book.insertSheet(READING_TAB);
     sh.getRange(1, 1, 1, READING_HEAD.length).setValues([READING_HEAD]);
     sh.setFrozenRows(1);
-    sh.getRange(2, 2, Math.max(sh.getMaxRows() - 1, 1), 4).setNumberFormat('@');
+    sh.getRange(2, 1, Math.max(sh.getMaxRows() - 1, 1), READING_HEAD.length).setNumberFormat('@');
   }
   var names = head_(sh), col = {};
   READING_HEAD.forEach(function (hd) {
@@ -722,50 +849,269 @@ function wantTab_(book) {
   return { sh: sh, col: col, width: names.length };
 }
 
-// req = { list: true, add: [{id, title, type, vibe, note}] } → { rows, types, added: [id], dupes: [{id, title, tab}] }
+var plainKey_ = function (v) { return String(v).replace(/️/g, '').trim().toLowerCase(); };
+
+// 月份照这一页已有的写法：下拉选项 / 已有的格子里开头三个字母一样的原样用；这一页写的是数字就写数字；都没有就写英文全名
+function monthText_(m, known) {
+  var want = MONTHS[m - 1].slice(0, 3).toLowerCase(), digits = false;
+  for (var i = 0; i < known.length; i++) {
+    var s = cellText_(known[i], '');
+    if (s.slice(0, 3).toLowerCase() === want) return s;
+    if (/^\d{1,2}$/.test(s)) digits = true;
+  }
+  return digits ? m : MONTHS[m - 1];
+}
+
+// 要写进有下拉的格子：照选项里的写法写（大小写、emoji 的变体符不算差别）；选项里没有、下拉又不收别的值 → 说清楚缺什么
+function fit_(sh, row, col, v, what) {
+  var drop = dropdown_(sh.getRange(row, col + 1));
+  if (!drop) return v;
+  for (var i = 0; i < drop.list.length; i++) if (plainKey_(drop.list[i]) === plainKey_(v)) return typeof v === 'number' ? v : drop.list[i];
+  if (drop.strict) throw new Error(sh.getName() + ': the ' + what + ' dropdown has no "' + v + '" — add it in the Sheet');
+  return v;
+}
+
+// 看完的一条写进它那一页。all = 现在所有页里的条目 [{r, sh}]。返回 {} / { dupe: 已经在哪一页 } / { why: 为什么没写 }
+function finish_(book, d, all) {
+  var title = String(d.title).trim(), key = titleKey_(title);
+  var hits = all.filter(function (x) { return titleKey_(x.r.title) === key; });
+  var dated = hits.filter(function (x) { return !x.r.want && x.r.when; })[0];
+  if (dated) return { dupe: dated.r.tab };
+  var open = hits.filter(function (x) { return !x.r.want; })[0];   // 某一页里已经有、还没写日期：就地填
+  var wants = hits.filter(function (x) { return x.r.want; });
+  var tab = String(d.tab || '').trim().toLowerCase();
+  var sh = open ? open.sh : book.getSheets().filter(function (s) { return s.getName() !== READING_TAB && s.getName().trim().toLowerCase() === tab; })[0];
+  if (!sh) return { why: 'There is no ' + (d.tab || '?') + ' tab in your reading Sheet' };
+  var h = readingHead_(sh), yc = h ? h.cols.indexOf('year') : -1, mc = h ? h.cols.indexOf('month') : -1;
+  if (yc < 0 || mc < 0) return { why: sh.getName() + ': no Year / Month / Name headings' };
+  var m = Math.min(12, Math.max(1, Number(d.month) || 1)), year = Number(d.year);
+  if (!(year > 1900)) return { why: 'No year' };
+  var body = readingBody_(sh, h), row = open ? open.r.row : 0, fresh = false;
+  if (!row) {
+    // 最后一条有日期的下面那一行；那一行有东西（比如放在底下、还没看的）就先插一行
+    var last = h.row;
+    body.forEach(function (r, n) { if (cellText_(r[h.name], '') && cellText_(r[yc], '')) last = h.row + 1 + n; });
+    row = last + 1;
+    var taken = row <= h.last && body[row - h.row - 1].some(function (v) { return v !== '' && v !== null; });
+    if (taken || row > sh.getMaxRows()) { sh.insertRowsAfter(row - 1, 1); fresh = true; }
+  }
+  var was = open ? body[row - h.row - 1] : [], wrote = [];
+  var set = function (col, v, what) {
+    while (sh.getMaxColumns() < col + 1) sh.insertColumnAfter(sh.getMaxColumns());
+    var cell = fit_(sh, row, col, v, what);
+    sh.getRange(row, col + 1).setValue(typeof cell === 'number' ? cell : toCell_('text', cell));
+    wrote.push(col);
+  };
+  // Want 页里写过的备注跟着过去，这次写的接在后面
+  var notes = wants.map(function (x) { return x.r.full; }).concat(open ? [cellText_(was[h.name + 3], '')] : []).concat([String(d.note || '').trim()]);
+  var note = notes.filter(function (s, i) { return s && notes.indexOf(s) === i; }).join('\n');
+  try {
+    set(yc, year, 'Year');
+    set(mc, monthText_(m, ((dropdown_(sh.getRange(row, mc + 1)) || {}).list || []).concat(body.map(function (r) { return r[mc]; }))), 'Month');
+    if (d.mark) set(h.name + 1, String(d.mark), 'rating');
+    if (d.kind) set(h.name + 2, String(d.kind), 'kind');
+    if (note) set(h.name + 3, note, 'note');
+    if (!open) set(h.name, title, 'Name');
+    SpreadsheetApp.flush();   // 下拉不收的值最晚在这里报出来
+  } catch (err) {
+    // 写到一半：这一行恢复原样，这条留在网页那边等着
+    try {
+      if (fresh) sh.deleteRow(row);
+      else wrote.forEach(function (col) { sh.getRange(row, col + 1).setValue(was[col] === undefined ? '' : was[col]); });
+    } catch (e) { /* 恢复不了就算了，原因照样报回去 */ }
+    return { why: String(err.message || err) };
+  }
+  // 行号从下往上删，上面的不会挪位置
+  wants.map(function (x) { return x.r.row; }).sort(function (a, b) { return b - a; }).forEach(function (n) { wants[0].sh.deleteRow(n); });
+  return {};
+}
+
+// req = { list: true, add: [{id, title, type, vibe, note}], done: [{id, title, tab, year, month, mark, kind, note}] }
+// → { rows, types, kinds: {页名: [小类…]}, added: [id], logged: [id], dupes: [{id, title, tab}], failed: [{id, title, why}] }
 function reading_(req) {
   var book = readingBook_();
   if (!book) return { error: 'no sheet' };
-  var tz = tz_(), rows = [], types = [];
-  book.getSheets().forEach(function (sh) {
-    if (sh.getName() !== READING_TAB) types.push(sh.getName());
-    rows = rows.concat(readingRows_(sh, tz));
-  });
-  var seen = {};
-  rows.forEach(function (r) { if (!seen[titleKey_(r.title)]) seen[titleKey_(r.title)] = r; });
-  var out = { added: [], dupes: [] };
+  var tz = tz_(), all, types, kinds;
+  var scan = function (withKinds) {
+    all = []; types = []; kinds = {};
+    book.getSheets().forEach(function (sh) {
+      var mine = sh.getName() === READING_TAB, h = readingHead_(sh), body = readingBody_(sh, h);
+      if (!mine) types.push(sh.getName());
+      readingRows_(sh, tz, h, body).forEach(function (r) { all.push({ r: r, sh: sh }); });
+      if (withKinds && h && !mine) { var k = readingKinds_(sh, h, body); if (k.length) kinds[sh.getName()] = k; }
+    });
+  };
   var adds = (req.add || []).filter(function (a) { return a && String(a.title || '').trim(); });
+  var dones = (req.done || []).filter(function (d) { return d && String(d.title || '').trim(); });
+  var writes = adds.length + dones.length > 0;
+  scan(Boolean(req.list) && !writes);
+  var out = { added: [], dupes: [], logged: [], failed: [] }, changed = false;
   if (adds.length) {
-    var w = wantTab_(book), fresh = [], today = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+    var seen = {}, fresh = [], w = wantTab_(book);
+    all.forEach(function (x) { if (!seen[titleKey_(x.r.title)]) seen[titleKey_(x.r.title)] = x.r; });
     adds.forEach(function (a) {
-      var r = { title: String(a.title).trim(), tab: String(a.type || '').trim(), want: true, when: today, mark: String(a.vibe || '').trim(), note: String(a.note || '').trim() };
-      var hit = seen[titleKey_(r.title)];
-      if (hit) { out.dupes.push({ id: a.id, title: r.title, tab: hit.tab }); return; }
+      var title = String(a.title).trim(), hit = seen[titleKey_(title)];
+      if (hit) { out.dupes.push({ id: a.id, title: title, tab: hit.tab }); return; }
       var line = [];
       for (var i = 0; i < w.width; i++) line.push('');
-      line[w.col.added] = today;
-      line[w.col.name] = toCell_('text', r.title);
-      line[w.col.type] = toCell_('text', r.tab);
-      line[w.col.vibe] = toCell_('text', r.mark);
-      line[w.col.note] = toCell_('text', r.note);
+      line[w.col.name] = toCell_('text', title);
+      line[w.col.type] = toCell_('text', String(a.type || '').trim());
+      line[w.col.vibe] = toCell_('text', String(a.vibe || '').trim());
+      line[w.col.note] = toCell_('text', String(a.note || '').trim());
       fresh.push(line);
-      seen[titleKey_(r.title)] = r;
-      rows.push(r);
+      seen[titleKey_(title)] = { tab: String(a.type || '').trim() };
       out.added.push(a.id);
     });
     if (fresh.length) {
       var start = w.sh.getLastRow() + 1, need = start + fresh.length - 1 - w.sh.getMaxRows();
       if (need > 0) w.sh.insertRowsAfter(w.sh.getMaxRows(), need);
       w.sh.getRange(start, 1, fresh.length, w.width).setValues(fresh);
+      changed = true;
     }
   }
-  if (req.list) { out.rows = rows; out.types = types; }
+  dones.forEach(function (d) {
+    if (changed) scan(false);   // 上一条挪过行：重新读一遍再找
+    var res;
+    try { res = finish_(book, d, all); } catch (err) { res = { why: String(err.message || err) }; }
+    if (res.dupe) out.dupes.push({ id: d.id, title: String(d.title).trim(), tab: res.dupe });
+    else if (res.why) out.failed.push({ id: d.id, title: String(d.title).trim(), why: res.why });
+    else out.logged.push(d.id);
+    changed = true;
+  });
+  if (req.list) {
+    if (writes) scan(true);   // 写过东西：重新读一遍，回去的就是表格现在的样子
+    out.rows = all.map(function (x) { return { title: x.r.title, tab: x.r.tab, want: x.r.want, when: x.r.when, mark: x.r.mark, note: x.r.note }; });
+    out.types = types;
+    out.kinds = kinds;
+  }
   return out;
+}
+
+// ================= 季度表：你自己的另一个表格 =================
+// 链接在 Settings 的 quarter（{url, from}），在网页电脑端的设置里填一次。那个表格每个季度一页，页名「2026 Q4」。
+// 网页把每天的两个数算好发来（progress、focus）；这里只管找到那一天那一行，写这两格，别的格子一概不碰。
+var QUARTER_COLS = ['progress', 'focus'];
+
+function quarterBook_() {
+  var row = readAll_('settings').filter(function (r) { return r.id === 'quarter'; })[0];
+  var url = row && row.value && String(row.value.url || '').trim();
+  if (!url) return null;
+  var id = (/\/d\/([a-zA-Z0-9_-]{20,})/.exec(url) || [])[1];
+  return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.openByUrl(url);
+}
+
+// 页名不分大小写、不管空格（2026 Q4 / 2026Q4 / 2026 q4）；没有这一页、但整个表格就叫这个名字，就用第一页
+function quarterTab_(book, name) {
+  var flat = function (v) { return String(v || '').replace(/\s+/g, '').toLowerCase(); };
+  var sheets = book.getSheets();
+  for (var i = 0; i < sheets.length; i++) if (flat(sheets[i].getName()) === flat(name)) return sheets[i];
+  return flat(book.getName()) === flat(name) ? sheets[0] : null;
+}
+
+// req = { rows: [{date, progress, focus}] } → { done: [date], missing: [{date, why}] }
+function quarter_(req) {
+  var book = quarterBook_();
+  if (!book) return { error: 'no sheet' };
+  var tz = book.getSpreadsheetTimeZone(), out = { done: [], missing: [] }, byTab = {};
+  (req.rows || []).forEach(function (r) {
+    var m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(r && r.date || ''));
+    if (!m) return;
+    var tab = m[1] + ' Q' + (Math.floor((Number(m[2]) - 1) / 3) + 1);
+    (byTab[tab] = byTab[tab] || []).push(r);
+  });
+  Object.keys(byTab).forEach(function (tab) {
+    var miss = function (why) { byTab[tab].forEach(function (r) { out.missing.push({ date: r.date, why: why }); }); };
+    var sh = quarterTab_(book, tab);
+    if (!sh) return miss('No tab named ' + tab);
+    var last = sh.getLastRow(), width = sh.getLastColumn();
+    if (last < 2 || width < 1) return miss('The ' + tab + ' tab is empty');
+    // 前 5 行里找表头：同一行里写着 progress 和 focus
+    var top = sh.getRange(1, 1, Math.min(5, last), width).getValues(), head = 0, col = {};
+    for (var r = 0; r < top.length && !head; r++) {
+      var low = top[r].map(function (v) { return String(v === null ? '' : v).trim().toLowerCase(); });
+      if (QUARTER_COLS.every(function (k) { return low.indexOf(k) >= 0; })) { head = r + 1; QUARTER_COLS.forEach(function (k) { col[k] = low.indexOf(k) + 1; }); }
+    }
+    if (!head) return miss('No progress / focus columns on ' + tab);
+    if (last <= head) return miss('No dates on ' + tab);
+    // 前 3 列里找日期：哪一行是哪一天
+    var at = {};
+    sh.getRange(head + 1, 1, last - head, Math.min(3, width)).getValues().forEach(function (row, i) {
+      for (var c = 0; c < row.length; c++) {
+        var d = day_(row[c], tz);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(d)) { at[d] = head + 1 + i; break; }
+      }
+    });
+    byTab[tab].forEach(function (r) {
+      var row = at[r.date];
+      if (!row) { out.missing.push({ date: r.date, why: 'No row for ' + r.date + ' on ' + tab }); return; }
+      QUARTER_COLS.forEach(function (k) {
+        var v = Number(r[k]);
+        if (r[k] === null || r[k] === undefined || isNaN(v)) return;
+        var cell = sh.getRange(row, col[k]);
+        if (cell.getValue() !== v) cell.setValue(v);
+      });
+      out.done.push(r.date);
+    });
+  });
+  return out;
+}
+
+// ================= 归档：很久以前的任务搬到 Archive 页 =================
+// 网页设置里点 Archive 才会跑。before 这天以前的任务整行抄到 Archive 页（没有就建，表头和 Tasks 一样），
+// 再从 Tasks 删掉、记进 Deleted（各台设备下次同步跟着清掉）。还挂在进行中的整块计划的条目上的不动，不然计划进度会少算。
+function archive_(before, now) {
+  before = String(before || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(before)) return { moved: 0 };
+  var ss = SpreadsheetApp.getActiveSpreadsheet(), sh = sheetOf_('tasks'), tz = tz_();
+  var names = head_(sh), col = cols_(T.tasks, names), data = body_(sh, names);
+  var live = {};
+  readAll_('projects').forEach(function (p) { if (p.kind !== 'regular' && p.status === 'active') live[p.id] = true; });
+  var moved = [], gone = [], log = [];
+  data.forEach(function (row, i) {
+    var id = String(row[col.id] || '').trim(), d = day_(row[col.date], tz);
+    if (!id || !d || d >= before) return;
+    if (String(row[col.itemId] || '').trim() && live[String(row[col.projectId] || '').trim()]) return;
+    moved.push(row); gone.push(i + 2); log.push(['tasks', id, now, now]);
+  });
+  if (!moved.length) return { moved: 0 };
+  var ar = ss.getSheetByName(ARCHIVE);
+  if (!ar) {
+    ar = ss.insertSheet(ARCHIVE);
+    ar.getRange(1, 1, 1, names.length).setValues([names]);
+    ar.setFrozenRows(1);
+  }
+  // 按表头对齐（Tasks 后来多了列，Archive 也补上），文字原样留着
+  var an = head_(ar);
+  names.forEach(function (h) {
+    if (!h || an.indexOf(h) >= 0) return;
+    if (ar.getMaxColumns() < an.length + 1) ar.insertColumnAfter(ar.getMaxColumns());
+    ar.getRange(1, an.length + 1).setValue(h);
+    an.push(h);
+  });
+  var lines = moved.map(function (row) {
+    return an.map(function (h) {
+      var i = names.indexOf(h), v = i >= 0 ? row[i] : '';
+      return typeof v === 'string' && v.charAt(0) === '=' ? "'" + v : v;
+    });
+  });
+  var start = ar.getLastRow() + 1, need = start + lines.length - 1 - ar.getMaxRows();
+  if (need > 0) ar.insertRowsAfter(ar.getMaxRows(), need);
+  ar.getRange(start, 1, lines.length, an.length).setValues(lines);
+  // 从下往上删，挨着的几行一次删掉
+  for (var k = gone.length - 1; k >= 0; k--) {
+    var end = gone[k], first = end;
+    while (k > 0 && gone[k - 1] === first - 1) { first--; k--; }
+    sh.deleteRows(first, end - first + 1);
+  }
+  var del = deletedSheet_();
+  del.getRange(del.getLastRow() + 1, 1, log.length, 4).setValues(log);
+  return { moved: moved.length };
 }
 
 // ================= 网页接口 =================
 // App 只发 POST：{ secret, version, push: { rows: { tasks: [...] }, deletes: [{table, id, at}] }, pull: true, since }
 // 返回 { ok, now, pull: { tables, deleted } }。所有请求排队执行，所以 since 不会漏掉数据。
+// 还可以带：tidy（清过期的删除记录）、quarter（季度表的两格）、archive（{before}，旧任务搬进 Archive 页）、reading（阅读表格）
 
 function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -786,11 +1132,27 @@ function doPost(e) {
   try { lock.waitLock(25000); } catch (err) { return json_({ error: 'busy' }); }
   try {
     var now = Date.now(), touched = 0, out = { ok: true };
-    var push = body.push || {}, rows = push.rows || {}, dead = deadMap_();
-    Object.keys(rows).forEach(function (name) { if (T[name]) touched += upsert_(name, rows[name], now, dead); });
-    touched += remove_(push.deletes, now);
-    if (touched) {
-      try { recount_(); } catch (err) { out.recount = String(err); }   // 名字列出问题不能影响同步，但要能看见
+    PLAN_NAMES = null;
+    var push = body.push || {}, rows = push.rows || {}, dels = push.deletes || [], dead = deadMap_();
+    // Settings 先写：Friends 页的列按网页里排好的顺序建好，再写每个人的那几格
+    var fields = (rows.settings || []).some(function (r) { return (r.key || r.id) === 'friend-fields'; });
+    Object.keys(rows).sort(function (a, b) { return (a === 'settings' ? 0 : 1) - (b === 'settings' ? 0 : 1); }).forEach(function (name) {
+      if (T[name]) touched += upsert_(name, rows[name], now, dead);
+      if (name === 'settings' && fields) friendCols_();
+    });
+    touched += remove_(dels, now);
+    // 脚本自己填的列：哪张表这次被动到了才重填（任务 / 条目的计划名在写入时已经顺手填了）
+    var hit = function (name) { return (rows[name] && rows[name].length) || dels.some(function (d) { return d.table === name; }); };
+    try {
+      if (hit('projects')) recount_();
+      if (hit('friends') || hit('meets')) recountFriends_();
+    } catch (err) { out.recount = String(err); }   // 名字列出问题不能影响同步，但要能看见
+    if (body.tidy) pruneDeleted_();
+    if (body.archive) {
+      try { out.archive = archive_(body.archive.before, now); } catch (err) { out.archive = { error: String(err.message || err) }; }
+    }
+    if (body.quarter) {
+      try { out.quarter = quarter_(body.quarter); } catch (err) { out.quarter = { error: String(err.message || err) }; }   // 季度表出问题不影响同步
     }
     if (body.reading) {
       try { out.reading = reading_(body.reading); } catch (err) { out.reading = { error: String(err.message || err) }; }   // 阅读表格出问题不影响同步

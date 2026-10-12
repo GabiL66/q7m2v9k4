@@ -210,11 +210,14 @@ test("import: matched by name — existing rows are updated, new ones added, box
   assert.deepEqual(out.box[1].parts, [{ ing: "ex-eggs", amt: "2" }]);
 });
 
-test("a note written on a shopping list line stays with that week's list", () => {
-  const D = data({ [NEXT]: { notes: { "ex-chicken": "thighs if they're on sale" } } });
-  const rows = rowsOf(M.shopList(D, NEXT, 0));
-  assert.equal(rows["ex-chicken"].note, "thighs if they're on sale");
-  assert.equal(rows["ex-broccoli"].note, "");
+test("one note for the whole shop; older per-line notes are carried into it", () => {
+  const old = data({ [NEXT]: { notes: { "ex-chicken": "thighs if they're on sale", "any:veg": " bok choy ", "gone": "x", "ex-broccoli": "" } } });
+  assert.equal(M.shopMemo(old, old.week[NEXT]), "Chicken breast: thighs if they're on sale\nAny veg: bok choy\nx");
+  const D = data({ [NEXT]: { memo: "ask about the fish", notes: { "ex-chicken": "old" } } });
+  assert.equal(M.shopMemo(D, D.week[NEXT]), "ask about the fish");
+  assert.equal(M.shopMemo(data({ [NEXT]: { memo: "", notes: { "ex-chicken": "old" } } }), { memo: "", notes: { "ex-chicken": "old" } }), "", "cleared stays cleared");
+  assert.equal(M.shopMemo(D, undefined), "");
+  assert.equal(rowsOf(M.shopList(D, NEXT, 0))["ex-chicken"].note, undefined);
 });
 
 test("restock: the date one cycle on, and what's coming in the next three months", () => {
@@ -243,4 +246,16 @@ test("import also takes things to restock, matched by name", () => {
   const D = { ing: {}, box: {}, sup: { a: { id: "a", name: "Vitamin D", price: 20, n: 30, unit: "d", next: "2026-10-20" } } };
   const out = M.importRows(D, { sup: [{ name: "vitamin d", store: "Costco" }, { name: "Shampoo" }, { name: " " }] }, () => "new");
   assert.deepEqual(out.sup.map((x) => [x.id, x.store, x.price, x.unit]), [["a", "Costco", 20, "d"], ["new", "", 0, "m"]]);
+});
+
+test("from Friday the plan starts at next week", () => {
+  assert.equal(M.planStart("2026-10-08"), W0, "Thursday: still this week");
+  assert.equal(M.planStart("2026-10-09"), NEXT, "Friday: jump");
+  assert.equal(M.planStart("2026-10-11"), NEXT, "Sunday, last day of a Monday week");
+  assert.equal(M.planStart("2026-10-12"), NEXT, "Monday: it is this week now");
+  // 一周从周日开始：周日到周四还是这周，周五、周六翻
+  assert.equal(M.planStart("2026-10-08", "sunday"), "2026-10-04");
+  assert.equal(M.planStart("2026-10-09", "sunday"), "2026-10-11");
+  assert.equal(M.planStart("2026-10-10", "sunday"), "2026-10-11");
+  assert.equal(M.planStart("2026-10-11", "sunday"), "2026-10-11");
 });

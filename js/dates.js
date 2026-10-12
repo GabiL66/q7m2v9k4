@@ -52,6 +52,12 @@ export function addMonths(s, n) {
   return isoOf(y, m + n, 1);
 }
 
+// 季度：1–3 月是 1，10–12 月是 4
+export const quarterOf = (s) => Math.floor((Number(s.slice(5, 7)) - 1) / 3) + 1;
+export function startOfQuarter(s) {
+  return isoOf(Number(s.slice(0, 4)), (quarterOf(s) - 1) * 3 + 1, 1);
+}
+
 export function daysInMonth(s) {
   const [y, m] = parts(s);
   return new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -73,6 +79,12 @@ export function fmtDay(s) {
 export function fmtShort(s) {
   const [, m, d] = parts(s);
   return MONTHS[m - 1] + " " + d;
+}
+
+// 76 → "1:16"（时间表的格子）
+export function fmtClock(min) {
+  const v = Math.max(0, Math.round(Number(min) || 0));
+  return Math.floor(v / 60) + ":" + pad(v % 60);
 }
 
 // 45 → "45m"，90 → "1h 30m"，120 → "2h"

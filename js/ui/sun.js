@@ -1,17 +1,27 @@
 // 今天页的「日出」圆盘（手机和电脑都有）：这一天计过时的每一段画在 24 小时的圆盘上——
-// 外圈 6→18（白天，底色暖）、内圈 18→6（夜里，底色冷），6 点在左边、顺时针（几何在 js/day.js）。
-// 通勤日的固定时段画灰，正在计时的那段画到现在；「现在」是横在当前那圈上的一道短线。
+// 外圈 6→18（白天）、内圈 18→6（夜里），6 点在左边、顺时针（几何在 js/day.js）。
+// 底盘是镜面铬：白天那圈亮银、夜里那圈深灰，没做事的时间就是这层金属；最左边（6 点 / 18 点，一圈的头和尾）横着切开一道细缝。
+// 任务的色块用项目颜色的霓虹版（groups.js 的 neon），压在金属上才跳得出来。夜里是发光的整块；
+// 白天画成刷在金属上的油画笔触（brush()：几道并排的笔毛，起笔齐、收笔有几根拖出去，边是毛的），整块的那条弧只留着接手指、标选中。
+// 每天晚上 11 点到早上 8 点是休息，通勤日再加来回路上的两段：这些不可用的时段先盖一层磨砂把反光压下去、再压深色细纹；
+// 正在计时的那段画到现在；升起来以后整个圆盘外面有一圈和金属同色的柔光（css 里 .sun 的 box-shadow，压在阴影上面）；
+// 「现在」是从圆心伸出去的一根指针（白天电光蓝、夜里青柠），指到当前那一圈的外沿——升起来以后指针从中间那几行字外面起。
 // 平时它是屏幕下方一个半透明的半圆（在计时浮条上面）；往上拖，它跟着手指升起、变大，时间段从 6 点起一段段亮起；
 // 松手过了三分之一就升到屏幕中间，不然落回去；甩一下也行（看松手前的速度）。点一下也能升起 / 落下；升起时点外面、往下拖、按 Esc 落回。
+// 落着的时候只有两圈环本身接手指（样式里 pointer-events: stroke），别的地方的点击穿过去给下面的列表；
+// 圆盘正下方（浮条上沿）一个小签：这一天做了多少深度（◆ Deep），设了每天的目标就带上目标。
 
 import * as store from "../store.js";
 import * as D from "../day.js";
+import * as E from "../engine.js";
+import { lifeOf } from "../stats.js";
 import { parseTimes } from "../times.js";
 import { esc, on } from "../dom.js";
 import { fmtDay, fmtMin } from "../dates.js";
 import { colorOf } from "./common.js";
+import { neon } from "../groups.js";
 
-const RO = 98, RI = 72;   // 外圈、内圈的半径（viewBox ±120，圈宽 18）；两圈之间的缝里画「日出」那道光
+const RO = 98, RI = 72;   // 外圈、内圈的半径（viewBox ±120，圈宽 18）
 const reduce = matchMedia("(prefers-reduced-motion: reduce)");
 
 let host = null;
@@ -34,10 +44,26 @@ function arcPath(r, a, b) {
   return "M" + f1(x1) + " " + f1(y1) + "A" + r + " " + r + " 0 " + (span > 180 ? 1 : 0) + " 1 " + f1(x2) + " " + f1(y2);
 }
 
+// 白天的一笔：六道并排的笔毛，各自深一点或浅一点；起笔差不了几分钟，收笔有的拖得长。长短、深浅按这一段的起止定死，重画不会变样。
+// 颜色在 css 里从 --c 调出来（--k = 往白 / 往黑混多少）
+function brush(x, color, boost) {
+  const R0 = x.ring === "outer" ? RO : RI, span = x.b - x.a, n = 6;
+  let h = (Math.round(x.a * 31 + x.b * 17) ^ (x.ring === "outer" ? 0x9E3779B9 : 0x85EBCA6B)) >>> 0;
+  const rnd = () => { h += 0x6D2B79F5; let t = Math.imul(h ^ (h >>> 15), 1 | h); t ^= t + Math.imul(t ^ (t >>> 7), 61 | t); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  let out = "";
+  for (let j = 0; j < n; j++) {
+    const head = Math.min(rnd() * 3, span * 0.1), tail = Math.min(rnd() < 0.35 ? rnd() * 14 : rnd() * 5, span * 0.35), k = rnd();
+    const tone = k < 0.4 ? "lt" : k < 0.75 ? "" : "dk";
+    out += '<path' + (tone ? ' class="' + tone + '" style="--k:' + Math.round(rnd() * 15) + '%"' : "") + ' d="' + arcPath(R0 - 9 + (j + 0.5) * 3, x.a + head, x.b - tail) + '"/>';
+  }
+  return '<g class="brush' + (boost ? " boost" : "") + '" filter="url(#sun-rough)" style="--c0:' + esc(color) + '">' + out + "</g>";
+}
+
 // 这一天要画的：通勤固定时段（灰）、计过时的段（计划颜色）、正在跑的那段（到现在）
 function collect(c, d) {
   const list = [];
-  if (store.isCommuteDay(d)) D.COMMUTE_BLOCKS.forEach((b) => list.push({ ...b, kind: "fixed", color: "" }));
+  // 每天晚上 11 点到早上 8 点是休息；通勤日再加上来回路上的两段
+  (store.isCommuteDay(d) ? D.COMMUTE_BLOCKS : [D.REST_BLOCK]).forEach((b) => list.push({ ...b, kind: "fixed", color: "", rest: b === D.REST_BLOCK }));
   const run = store.timer();
   for (const t of store.tasksOn(d)) {
     for (const s of parseTimes(t.times)) if (s.from && s.to) list.push({ from: s.from, to: s.to, min: s.min, label: t.title, kind: "time", color: colorOf(t) });
@@ -46,15 +72,27 @@ function collect(c, d) {
   return D.arcs(list);
 }
 
+// 这一天的深度分钟：标了 Deep 的任务花掉的时间；正在计时的那个算到现在
+function deepMin(c, d) {
+  const run = store.timer();
+  return store.tasksOn(d).reduce((a, t) => a + (t.deep ? E.spentMin(t) + (run?.taskId === t.id && d === c.today && t.status !== "done" ? Math.floor((Date.now() - Number(run.start)) / 60000) : 0) : 0), 0);
+}
+
+function deepText(c, d) {
+  const min = deepMin(c, d), goal = lifeOf(c).deepGoal;
+  return min > 0 || (goal > 0 && d === c.today) ? "◆ Deep " + fmtMin(min) + (goal > 0 ? " / " + fmtMin(goal) : "") : "";
+}
+
 function centerHTML(c, d) {
   const x = pieces[picked];
   if (x) {
     return "<b>" + esc(x.label) + "</b><span class=\"num\">" + esc(x.from) + "–" + esc(x.to) + "</span>" +
-      (x.kind === "fixed" ? "<em>Commute day</em>" : x.kind === "live" ? "<em>Running</em>" : "<em class=\"num\">" + fmtMin(x.min) + "</em>");
+      (x.kind === "fixed" ? "<em>" + (x.rest ? "Rest" : "Commute day") + "</em>" : x.kind === "live" ? "<em>Running</em>" : "<em class=\"num\">" + fmtMin(x.min) + "</em>");
   }
   const total = store.tasksOn(d).reduce((a, t) => a + parseTimes(t.times).reduce((s, x) => s + x.min, 0), 0);
+  const deep = deepText(c, d);
   return "<b>" + esc(fmtDay(d)) + "</b><span class=\"num\">" + (total ? fmtMin(total) + " timed" : "Nothing timed yet") + "</span>" +
-    (store.isCommuteDay(d) ? "<em>Commute day</em>" : "");
+    (deep ? "<span class=\"num\">" + esc(deep) + "</span>" : "") + (store.isCommuteDay(d) ? "<em>Commute day</em>" : "");
 }
 
 function sunHTML(c, d) {
@@ -63,31 +101,42 @@ function sunHTML(c, d) {
     .map(([deg, txt, r]) => { const [x, y] = pt(r, deg); return '<text x="' + f1(x) + '" y="' + f1(y) + '">' + txt + "</text>"; }).join("");
   let now = "";
   if (d === c.today) {
-    const m = D.dialMin(store.clockNow()), r = m < 720 ? RO : RI;
-    const [x1, y1] = pt(r - 13, D.angleOf(m)), [x2, y2] = pt(r + 13, D.angleOf(m));
-    now = '<line class="now" x1="' + f1(x1) + '" y1="' + f1(y1) + '" x2="' + f1(x2) + '" y2="' + f1(y2) + '"/>';
+    const m = D.dialMin(store.clockNow()), r = (m < 720 ? RO : RI) + 13;
+    const [x2, y2] = pt(r, D.angleOf(m));
+    // --cut：升起来以后指针从离圆心 46 的地方起（占全长的百分之几），让开中间的字
+    now = '<line class="now" pathLength="100" style="--cut:' + f1((46 / r) * 100) + '" x1="0" y1="0" x2="' + f1(x2) + '" y2="' + f1(y2) + '"/><circle class="now-dot" r="3.6"/>';
   }
+  // 镜面铬：一条斜着的明暗渐变，七个颜色在 css 里按主题和哪一圈给（--m1 … --m7）
+  const chrome = (ring) => '<linearGradient id="sun-g-' + ring + '" class="chrome ' + ring + '" x1="0" y1="0" x2="1" y2="1">' +
+    [1, 2, 3, 4, 5, 6, 7].map((n, i) => '<stop offset="' + (i / 6).toFixed(3) + '" style="stop-color:var(--m' + n + ')"/>').join("") + "</linearGradient>";
+  const edges = [RO + 9, RO - 9, RI + 9, RI - 9].map((r, i) => '<circle class="trk-e' + (i % 2 ? " in" : "") + '" r="' + r + '"/>').join("");
   const arcs = pieces.map((x, i) =>
-    '<path class="arc ' + x.kind + (i === picked ? " on" : "") + '" data-i="' + i + '" data-t="' + x.a + '" d="' + arcPath(x.ring === "outer" ? RO : RI, x.a, x.b) + '"' +
-    (x.color ? ' style="--c:' + esc(x.color) + '"' : "") + "><title>" + esc(x.label + " · " + x.from + "–" + x.to) + "</title></path>").join("");
+    (x.kind === "fixed" ? '<path class="frost ' + x.ring + '" d="' + arcPath(x.ring === "outer" ? RO : RI, x.a, x.b) + '"/>' : "") +
+    '<path class="arc ' + x.kind + (i === picked ? " on" : "") + (x.color && !neon(x.color) ? " boost" : "") + '" data-i="' + i + '" data-t="' + x.a + '" d="' + arcPath(x.ring === "outer" ? RO : RI, x.a, x.b) + '"' +
+    (x.color ? ' style="--c:' + esc(neon(x.color) || x.color) + '"' : "") + "><title>" + esc(x.label + " · " + x.from + "–" + x.to) + "</title></path>" +
+    (x.kind === "fixed" ? "" : brush(x, neon(x.color) || x.color || "#B4B4BC", Boolean(x.color) && !neon(x.color)))).join("");
   return '<div class="sun" role="button" tabindex="0" aria-label="Your day on a clock — drag up or press Enter">' +
     '<svg viewBox="-120 -120 240 240" aria-hidden="true">' +
-    '<circle class="trk day" r="' + RO + '"/><circle class="trk night" r="' + RI + '"/>' +
-    '<path class="sweep" data-ring="outer" d=""/><path class="sweep" data-ring="inner" d=""/>' +
-    '<g class="arcs">' + arcs + "</g>" + now + '<g class="hours">' + labels + "</g></svg>" +
-    '<div class="sun-c">' + centerHTML(c, d) + "</div></div>";
+    "<defs>" + chrome("day") + chrome("night") +
+    // 笔触的毛边：一层噪声把边推歪一点，再垫一点很浅的影子（颜料有厚度）
+    '<filter id="sun-rough" x="-30%" y="-30%" width="160%" height="160%"><feTurbulence type="fractalNoise" baseFrequency="0.1" numOctaves="2" seed="8" result="n"/>' +
+    '<feDisplacementMap in="SourceGraphic" in2="n" scale="3.2" xChannelSelector="R" yChannelSelector="G"/><feDropShadow dx="0" dy="0.9" stdDeviation="0.5" flood-color="#000" flood-opacity="0.4"/></filter>' +
+    '<mask id="sun-cut" maskUnits="userSpaceOnUse" x="-120" y="-120" width="240" height="240"><rect x="-120" y="-120" width="240" height="240" fill="#fff"/><rect x="-120" y="-1.7" width="120" height="3.4" fill="#000"/></mask></defs>' +
+    '<g mask="url(#sun-cut)"><circle class="trk day" r="' + RO + '" stroke="url(#sun-g-day)"/><circle class="trk night" r="' + RI + '" stroke="url(#sun-g-night)"/>' + edges +
+    '<g class="arcs">' + arcs + "</g></g>" +
+    now + '<g class="hours">' + labels + "</g></svg>" +
+    '<div class="sun-c">' + centerHTML(c, d) + "</div></div>" +
+    (deepText(c, d) ? '<p class="sun-deep num">' + esc(deepText(c, d)) + "</p>" : "");
 }
 
-// 按 p 点亮：从 6 点起，已经「升过」的时间段亮起来；扫过的那一截画一道光
+// 按 p 点亮：从 6 点起，已经「升过」的时间段亮起来
 function paint() {
   const el = host?.querySelector(".sun");
   if (!el) return;
   el.style.setProperty("--p", p.toFixed(3));
+  host.style.setProperty("--p", p.toFixed(3));   // 小签跟着淡出
   const lit = p * 1440;
   el.querySelectorAll(".arc").forEach((a) => a.classList.toggle("lit", Number(a.dataset.t) < lit || p >= 0.999));
-  const outer = Math.min(lit, 720), inner = Math.max(lit, 720);
-  el.querySelector('.sweep[data-ring="outer"]').setAttribute("d", outer > 1 ? arcPath(RO - 13, 0, outer) : "");
-  el.querySelector('.sweep[data-ring="inner"]').setAttribute("d", inner > 721 ? arcPath(RI - 13, 720, inner) : "");
 }
 
 function settle(up) {

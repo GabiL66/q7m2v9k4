@@ -1,4 +1,9 @@
-// 项目页：按「项目」分区（项目 = 计划的 group），每区汇总进度和今天要做多少；
+// 项目页：最上面是目标板（js/ui/goals.js）和各大类的时间占比；下面按「项目」分区（项目 = 大类 = 计划的 group），
+// 清单里的大类一直都在（空的也在）；区头 Rename 可以改名、换颜色、并进别的大类。
+// 每个大类看什么不一样（groups.js 的 trackOf，Settings 里能改）：
+//   看进度的（Build）：区头汇总进度、今天要做多少，计划卡有进度条、健康度、时间轴；
+//   看钟点 / Relax / 联系的（Fitness / Leisure / Friends）：区头一句话（最近 7 天多少、多久没联系），不达标是红的，没有进度条；
+//   不看的（Work / Chores）：只列计划，不显示这周做了几次。
 // 区里每个计划一张卡。计划两种（Kind）× 两种放法（Place），建的时候自由选：
 //   Total（总时长 + 截止日）：健康度、进度、今天要做多少、时间轴、模块进度、估时校准建议
 //   Regular（规律）：怎么重复、这周做了几次
@@ -8,12 +13,14 @@
 import * as store from "../store.js";
 import * as E from "../engine.js";
 import * as R from "../routines.js";
+import * as S from "../stats.js";
+import * as GR from "../groups.js";
 import { esc, on, icon } from "../dom.js";
 import { addDays, diffDays, fmtShort, fmtMin, WEEKDAYS } from "../dates.js";
 import { healthPill, groupsOf } from "./common.js";
 import { openModal, closeModal, modalSheet } from "./modal.js";
+import { goalsHTML } from "./goals.js";
 
-const GROUPS = ["Work 1", "Work 2", "Main - English", "Main - French", "Main - Fitness", "Fun"];
 let editing = "";
 let draft = null;      // 新建时还没存的：{kind, place, 各个框的值}
 let showClosed = false;
@@ -34,7 +41,7 @@ function timeline(c, p, plan) {
 
 const placeTag = (p) => '<span class="ptag">' + (E.isAuto(p) ? "Auto" : "Pool") + "</span>";
 
-function regularCardHTML(c, p) {
+function regularCardHTML(c, p, track) {
   const r = R.ruleOf(p);
   const w = E.regularWeek(c, p);
   const today = E.isAuto(p) ? R.dueOn(r, c.today) : 0;
@@ -42,12 +49,22 @@ function regularCardHTML(c, p) {
   return '<article class="pcard regular" data-project="' + p.id + '" style="--pc:' + esc(p.color) + '">' +
     '<header><button type="button" class="pname" data-act="edit-project"><i></i>' + esc(p.name || "Untitled") + "</button>" + placeTag(p) + "</header>" +
     '<p class="psub">↻ ' + esc(sub) + "</p>" +
-    (w.target ? '<div class="pweek" title="This week">' + Array.from({ length: w.target }, (_, k) => '<i class="' + (k < w.done ? "d" : k < w.placed ? "s" : "") + '"></i>').join("") +
+    (w.target && track !== "" ? '<div class="pweek" title="This week">' + Array.from({ length: w.target }, (_, k) => '<i class="' + (k < w.done ? "d" : k < w.placed ? "s" : "") + '"></i>').join("") +
       '<span class="num">' + w.done + "/" + w.target + " this week</span></div>" : "") + "</article>";
 }
 
-function cardHTML(c, p) {
-  if (E.isRegular(p)) return regularCardHTML(c, p);
+// 不看进度的大类里那种有总量的计划：只说是什么、什么时候到期、今天要做多少
+function plainCardHTML(c, p) {
+  const today = Math.round(E.needOn(c, p, c.today));
+  const sub = [p.deadline ? "due " + fmtShort(p.deadline) : "no deadline", today ? "today " + fmtMin(today) : ""].filter(Boolean).join(" · ");
+  return '<article class="pcard" data-project="' + p.id + '" style="--pc:' + esc(p.color) + '">' +
+    '<header><button type="button" class="pname" data-act="edit-project"><i></i>' + esc(p.name || "Untitled") + "</button>" + placeTag(p) + "</header>" +
+    '<p class="psub">' + esc(sub) + "</p></article>";
+}
+
+function cardHTML(c, p, track = "progress") {
+  if (E.isRegular(p)) return regularCardHTML(c, p, track);
+  if (track !== "progress") return plainCardHTML(c, p);
   const h = E.health(c, p);
   const plan = h.plan;
   const pct = plan.total ? Math.round((plan.done / plan.total) * 100) : 0;
@@ -74,39 +91,101 @@ function cardHTML(c, p) {
 
 const WORST = ["danger", "tight", "safe", "waiting", "open", "empty", "done", "dropped"];
 
-// 一个项目（一组子项目）的汇总：进度、今天要做多少、最差的那个健康度
-function groupHead(c, name, subs) {
-  let total = 0, done = 0, today = 0, worst = "done", deadline = "";
+const pctOf = (v, total) => (total > 0 ? (v / total < 0.005 ? "<1%" : Math.round((v / total) * 100) + "%") : "0%");
+const SHARE_KINDS = [["week", "Week"], ["month", "Month"], ["season", "Season"]];
+const shareKind = () => (SHARE_KINDS.some(([k]) => k === store.local().shareKind) ? store.local().shareKind : "season");
+
+// 各大类的时间占比：一根叠起来的条 + 每个大类占百分之几（这周 / 这个月 / 这个季度，记在这台设备上）
+function sharesHTML(sh, kind) {
+  const seg = '<span class="seg">' + SHARE_KINDS.map(([k, l]) => '<button type="button" data-act="share-kind" data-v="' + k + '"' + (k === kind ? ' class="on"' : "") + ">" + l + "</button>").join("") + "</span>";
+  const color = (g) => esc(g.color || "var(--c-None)");
+  return '<section class="pshare"><header><h3>Where the time went</h3><span class="msub">' + (sh.total ? fmtMin(sh.total) + " logged" : "Nothing logged yet") + "</span>" + seg + "</header>" +
+    (sh.total ? '<div class="sbar">' + sh.groups.map((g) => '<i style="flex-grow:' + g.min + ";background:" + color(g) + '" title="' + esc((g.name || "No project") + " · " + pctOf(g.min, sh.total) + " · " + fmtMin(g.min)) + '"></i>').join("") + "</div>" +
+      '<ul class="sleg">' + sh.groups.map((g) => '<li><i style="background:' + color(g) + '"></i>' + esc(g.name || "No project") + ' <b class="num">' + pctOf(g.min, sh.total) + "</b></li>").join("") + "</ul>" : "") + "</section>";
+}
+
+// 大类看的是什么（没存过的名字、哪都没归的计划照旧看进度）
+const trackFor = (name) => (name ? GR.trackOf(store.groupByName(name) || { name }) : "progress");
+// 最近一次和谁联系过（任何人）
+const lastContactDate = () => Object.values(store.lastContact()).sort().pop() || "";
+const healthOf = (c, g, last) => S.groupHealth(c, g, { weekly: store.setting("weekly", {}), lastContact: last });
+// 有几个大类不达标（侧栏 Projects 上的角标）
+export function projectAlerts(c) {
+  const last = lastContactDate();
+  return store.groups().filter((g) => { const h = healthOf(c, g, last); return h && h.level !== "ok"; }).length;
+}
+
+// 不看进度的大类头上那一句：最近 7 天做够没有 / Relax 在不在范围里 / 多久没联系了。不达标是红的，后面淡字写着标准
+function groupHealthHTML(c, name, last) {
+  const g = store.groupByName(name), h = g ? healthOf(c, g, last) : null;
+  if (!h) return "";
+  const ok = h.level === "ok";
+  let text, aim;
+  if (h.kind === "contact") {
+    text = h.days === null ? "No catch-up yet" : !ok ? "No catch-up in " + h.days + " days" : "Last catch-up " + (h.days === 0 ? "today" : h.days === 1 ? "yesterday" : h.days + " days ago");
+    aim = "at least one every 2 weeks";
+  } else if (h.kind === "min") {
+    text = fmtMin(h.min) + " in the last 7 days" + (ok ? "" : " · under " + fmtMin(h.limit));
+    aim = "at least " + fmtMin(h.limit) + " a week";
+  } else {
+    text = fmtMin(h.min) + " to relax in the last 7 days" + (h.level === "low" ? " · under " + fmtMin(h.lo) : h.level === "high" ? " · over " + fmtMin(h.hi) : "");
+    aim = h.lo && h.hi ? fmtMin(h.lo) + "–" + fmtMin(h.hi) + " a week" : h.lo ? "at least " + fmtMin(h.lo) + " a week" : h.hi ? "at most " + fmtMin(h.hi) + " a week" : "";
+  }
+  return '<p class="ghealth"><span class="health h-' + (ok ? "safe" : "danger") + '">' + (ok ? "✓ " : "! ") + esc(text) + "</span>" + (aim ? "<span>" + esc(aim) + "</span>" : "") + "</p>";
+}
+
+// 改名的那一排：名字、颜色、并进别的大类、（空的）拿掉
+function renameHTML(name, empty) {
+  const g = store.groupByName(name);
+  return '<input class="rename" data-rename="' + esc(name) + '" data-keep="rename-group" value="' + esc(name) + '" aria-label="Project name">' +
+    (g ? '<span class="swatches small" data-gcolor>' + store.PROJECT_COLORS.map((col) => '<label><input type="radio" name="gcolor" value="' + col + '"' + (g.color === col ? " checked" : "") + '><i style="background:' + col + '"></i></label>').join("") + "</span>" : "") +
+    '<select data-gmove aria-label="Move everything into another project"><option value="">Move into…</option>' + store.groups().filter((x) => x.name !== name).map((x) => '<option value="' + esc(x.name) + '" data-color="' + esc(x.color) + '">' + esc(x.name) + "</option>").join("") + "</select>" +
+    (g && empty ? '<button type="button" class="link" data-act="remove-group">Remove</button>' : "") +
+    '<button type="button" class="btn" data-act="rename-done">Done</button>';
+}
+
+// 一个大类（一组计划）的头：看进度的汇总进度、今天要做多少、最差的那个健康度；别的见 groupHealthHTML
+function groupHead(c, name, subs, empty, track, last) {
+  const progress = track === "progress";
+  let sum = 0, done = 0, today = 0, worst = "done", deadline = "";
   for (const p of subs.filter((x) => !E.isRegular(x))) {
     const h = E.health(c, p);
-    total += h.plan.total; done += h.plan.done;
+    sum += h.plan.total; done += h.plan.done;
     today += E.needOn(c, p, c.today);
     if (WORST.indexOf(h.level) < WORST.indexOf(worst)) worst = h.level;
     if (p.deadline && p.deadline > deadline) deadline = p.deadline;
   }
-  const pct = total ? Math.round((done / total) * 100) : 0;
-  const title = renaming === name
-    ? '<input class="rename" data-rename="' + esc(name) + '" data-keep="rename-group" value="' + esc(name) + '" aria-label="Project name">'
-    : "<h3>" + esc(name || "No project") + "</h3>";
-  const meta = [subs.length + " plan" + (subs.length > 1 ? "s" : ""), total ? pct + "% done" : "", deadline ? "until " + fmtShort(deadline) : "", today >= 0.5 ? "today " + fmtMin(today) : ""].filter(Boolean).join(" · ");
-  return '<header class="pg-top">' + title + '<span class="pg-meta">' + esc(meta) + "</span>" +
-    (name && subs.some((x) => !E.isRegular(x)) ? '<span class="health h-' + worst + ' dot-only" title="Most at risk: ' + worst + '">●</span>' : "") +
-    '<span class="pg-actions">' + (name && renaming !== name ? '<button type="button" class="btn ghosty" data-act="rename-group">Rename</button>' : "") +
-    '<button type="button" class="btn" data-act="new-sub">' + icon("plus") + " Plan</button></span></header>" +
-    (total ? '<div class="gbar"><i style="width:' + pct + '%"></i></div>' : "");
+  const pct = sum ? Math.round((done / sum) * 100) : 0;
+  const editing = renaming === name && name;
+  const color = store.groupByName(name)?.color;
+  const title = editing ? renameHTML(name, empty) : "<h3>" + (color ? '<i class="gdot" style="background:' + esc(color) + '"></i>' : "") + esc(name || "No project") + "</h3>";
+  const meta = [subs.length ? subs.length + " plan" + (subs.length > 1 ? "s" : "") : "No plans yet", progress && sum ? pct + "% done" : "", progress && deadline ? "until " + fmtShort(deadline) : "", today >= 0.5 ? "today " + fmtMin(today) : ""].filter(Boolean).join(" · ");
+  return '<header class="pg-top' + (editing ? " editing" : "") + '">' + title + (editing ? "" : '<span class="pg-meta">' + esc(meta) + "</span>" +
+    (progress && name && subs.some((x) => !E.isRegular(x)) ? '<span class="health h-' + worst + ' dot-only" title="Most at risk: ' + worst + '">●</span>' : "") +
+    '<span class="pg-actions">' + (name ? '<button type="button" class="btn ghosty" data-act="rename-group">Rename</button>' : "") +
+    '<button type="button" class="btn" data-act="new-sub">' + icon("plus") + " Plan</button></span>") + "</header>" +
+    (progress ? (sum ? '<div class="gbar"><i style="width:' + pct + '%"></i></div>' : "") : groupHealthHTML(c, name, last));
 }
 
 export function projectsHTML(c) {
   const open = c.projects.filter(E.isActive);
   const closed = c.projects.filter((p) => !E.isActive(p));
-  const groups = groupsOf(open);
+  const groups = groupsOf(open, { all: true });
+  const kind = shareKind(), r = S.periodRange(kind, c.today, store.prefs().weekStartsOn);
+  const sh = S.shares(c, r.from, r.to);
+  const hasClosed = (name) => closed.some((p) => (p.group || "") === name);
+  const last = lastContactDate();
   return '<div class="projects"><header class="page-head"><div><h2>Projects</h2></div>' +
     '<div class="tools"><button type="button" class="btn cta" data-act="new-project">' + icon("plus") + " New plan</button></div></header>" +
-    (groups.length ? groups.map((g) => '<section class="pgroup" data-group="' + esc(g.name) + '">' + groupHead(c, g.name, g.subs) +
-      '<div class="pgrid">' + g.subs.map((p) => cardHTML(c, p)).join("") + "</div></section>").join("")
-      : '<div class="empty big"><p>No plans yet.</p><p>A project is a big goal — French, Work 1, Fitness. Under it go plans: a <b>Total</b> (so many hours by a deadline) or a <b>Regular</b> one (every Monday, three times a week). Each can be placed on your days automatically, or wait in the pool for you to drag.</p><button type="button" class="btn cta" data-act="new-project">Make the first one</button></div>') +
+    goalsHTML(c) + sharesHTML(sh, kind) +
+    (c.projects.length ? "" : '<p class="hint pintro">A project is an area of your life. Tasks can sit right on it, or under a plan inside it: a <b>Total</b> (so many hours by a deadline) or a <b>Regular</b> one (every Monday, three times a week).</p>') +
+    groups.map((g) => {
+      const track = trackFor(g.name);
+      return '<section class="pgroup" data-group="' + esc(g.name) + '">' + groupHead(c, g.name, g.subs, !g.subs.length && !hasClosed(g.name), track, last) +
+        (g.subs.length ? '<div class="pgrid">' + g.subs.map((p) => cardHTML(c, p, track)).join("") + "</div>" : "") + "</section>";
+    }).join("") +
     (closed.length ? '<button type="button" class="link" data-act="toggle-closed">' + (showClosed ? "Hide" : "Show") + " " + closed.length + " closed</button>" +
-      (showClosed ? '<div class="pgrid closed">' + closed.map((p) => cardHTML(c, p)).join("") + "</div>" : "") : "") + "</div>";
+      (showClosed ? '<div class="pgrid closed">' + closed.map((p) => cardHTML(c, p, trackFor(String(p.group || "").trim()))).join("") + "</div>" : "") : "") + "</div>";
 }
 
 // ---------- 编辑框 ----------
@@ -148,16 +227,18 @@ function totalFields(p, isNew) {
 function editorHTML(p) {
   const c = store.ctx();
   const isNew = !p.id;
-  const groups = [...new Set([...GROUPS, ...c.projects.map((x) => x.group).filter(Boolean)])];
+  const groups = store.groups().map((g) => g.name);
   const kind = E.isRegular(p) ? "regular" : "total", place = E.isAuto(p) ? "auto" : "pool";
   let h = '<div class="project-editor" data-pid="' + (p.id || "") + '"><h2 class="sheet-title">' + (isNew ? "New plan" : "Edit plan") + "</h2>" +
-    '<div class="field-row"><label class="field"><span>Project</span><input data-pf="group" list="groups" value="' + esc(p.group || "") + '" placeholder="Main - French, Work 1…"><datalist id="groups">' + groups.map((g) => '<option value="' + esc(g) + '">').join("") + "</datalist></label>" +
+    '<div class="field-row"><label class="field"><span>Project</span><input data-pf="group" list="groups" value="' + esc(p.group || "") + '" placeholder="Work, Build…"><datalist id="groups">' + groups.map((g) => '<option value="' + esc(g) + '">').join("") + "</datalist></label>" +
     '<label class="field"><span>Plan</span><input data-pf="name" value="' + esc(p.name || "") + '" placeholder="B2 exam, Gym, Q4 report…"></label></div>' +
     '<div class="field-row"><div class="field"><span>Kind</span>' + seg("pkind", kind, [["total", "Total"], ["regular", "Regular"]], !isNew) + "</div>" +
     '<div class="field"><span>Place</span>' + seg("pplace", place, [["auto", "Auto"], ["pool", "Pool"]]) + "</div></div>" +
     '<p class="hint">' + HINT[kind + " " + place] + "</p>" +
     '<div class="field"><span>Color</span><div class="swatches">' + store.PROJECT_COLORS.map((col) => '<label><input type="radio" name="pcolor" data-pf="color" value="' + col + '"' + (p.color === col ? " checked" : "") + '><i style="background:' + col + '"></i></label>').join("") + "</div></div>" +
-    (kind === "regular" ? regularFields(p) : totalFields(p, isNew));
+    (kind === "regular" ? regularFields(p) : totalFields(p, isNew)) +
+    '<label class="check deepdef"><input type="checkbox" data-pdeep' + (p.rule?.deep ? " checked" : "") + "> <span>◆ Deep work by default <small>" +
+    (isNew ? "Tasks from this plan start out marked Deep." : "Marks every task of this plan, earlier ones too. Single tasks can still be changed.") + "</small></span></label>";
   if (isNew) {
     return h + '<div class="sheet-foot"><span></span><button type="button" class="btn cta" data-act="create-project">Create</button></div></div>';
   }
@@ -194,7 +275,7 @@ function itemsHTML(c, p) {
 // 新建时可以带上它属于哪个项目；focus 指定先让光标落在哪个框
 export function openProjectEditor(id, { group = "", focus = "" } = {}) {
   editing = id || "";
-  draft = id ? null : { group, kind: "total", place: "pool", early: 2, color: store.PROJECT_COLORS[store.all("projects").length % store.PROJECT_COLORS.length], rule: { start: store.today(), perWeek: 3, min: 30 } };
+  draft = id ? null : { group, kind: "total", place: "pool", early: 2, color: store.groupByName(group)?.color || store.PROJECT_COLORS[store.all("projects").length % store.PROJECT_COLORS.length], rule: { start: store.today(), perWeek: 3, min: 30 } };
   const p = id ? store.get("projects", id) : draft;
   const sheet = openModal(editorHTML(p), { wide: true, close: () => { editing = ""; draft = null; } });
   if (!id) sheet.querySelector('[data-pf="' + (focus || (group ? "name" : "group")) + '"]')?.focus();
@@ -215,6 +296,7 @@ function readDraft(box) {
   draft.rule = { ...(draft.rule || {}) };
   box.querySelectorAll("[data-rf]").forEach((el) => { draft.rule[el.dataset.rf] = el.value; });
   if (box.querySelector("[data-rday]")) draft.rule.days = readDays(box);
+  draft.rule.deep = Boolean(box.querySelector("[data-pdeep]")?.checked);
 }
 
 function redrawDraft() {
@@ -242,9 +324,10 @@ function createPlan(box) {
   if (!name) { box.querySelector('[data-pf="name"]').focus(); return; }
   const regular = draft.kind === "regular", r = draft.rule || {};
   const start = r.start || store.today(), end = R.clampEnd(start, r.end || "");
-  const rule = !regular ? null : draft.place === "auto"
-    ? { days: r.days || [0, 0, 0, 0, 0, 0, 0], start, end }
-    : { perWeek: Math.max(1, Number(r.perWeek) || 1), min: Math.max(5, Number(r.min) || 30), start, end };
+  const deep = r.deep ? { deep: true } : {};
+  const rule = !regular ? (r.deep ? deep : null) : draft.place === "auto"
+    ? { days: r.days || [0, 0, 0, 0, 0, 0, 0], start, end, ...deep }
+    : { perWeek: Math.max(1, Number(r.perWeek) || 1), min: Math.max(5, Number(r.min) || 30), start, end, ...deep };
   if (regular && draft.place === "auto" && !rule.days.some((v) => v > 0)) { box.querySelector("[data-rday]")?.focus(); return; }
   editing = store.saveProject({
     name, group: String(draft.group || "").trim(), color: draft.color, kind: draft.kind, place: draft.place, rule,
@@ -266,6 +349,9 @@ export function initProjects(rerender) {
       rerender();
       requestAnimationFrame(() => { const i = document.querySelector("[data-rename]"); i?.focus(); i?.select(); });
     }
+    else if (act === "rename-done") { renaming = null; rerender(); }
+    else if (act === "remove-group") { renaming = null; store.removeGroup(group); }
+    else if (act === "share-kind") store.setLocal({ shareKind: el.dataset.v });
     else if (act === "edit-project") openProjectEditor(pid);
     else if ((act === "pkind" || act === "pplace") && !pid) {
       readDraft(el.closest(".project-editor"));
@@ -291,18 +377,26 @@ export function initProjects(rerender) {
     }
   });
 
-  const saveRename = (input) => {
+  // 名字框：回车 / 点到别处就存。点的是同一排里的颜色、Move into，就先存名字、这一排不收
+  const saveRename = (input, stay = false) => {
     if (renaming === null || renaming !== input.dataset.rename) return;
-    const from = renaming;
-    renaming = null;
-    if (input.value.trim() && input.value.trim() !== from) store.renameGroup(from, input.value);
-    else rerender();
+    const from = renaming, to = input.value.trim();
+    renaming = stay ? to || from : null;
+    if (to && to !== from) store.renameGroup(from, to);
+    else if (!stay) rerender();
   };
   on(document, "keydown", "[data-rename]", (e, input) => {
     if (e.key === "Enter") saveRename(input);
     if (e.key === "Escape") { renaming = null; rerender(); }
   });
-  on(document, "focusout", "[data-rename]", (e, input) => saveRename(input));
+  on(document, "focusout", "[data-rename]", (e, input) => saveRename(input, Boolean(e.relatedTarget?.closest?.(".pg-top.editing"))));
+  on(document, "change", ".pg-top [data-gcolor] input", (e, el) => { if (renaming) store.saveGroup(renaming, { color: el.value }); });
+  on(document, "change", ".pg-top select[data-gmove]", (e, el) => {
+    const from = renaming;
+    if (!from || !el.value) return;
+    renaming = null;
+    store.renameGroup(from, el.value);
+  });
 
   // 已有计划：字段改了就存
   on(document, "change", ".project-editor [data-pf]", (e, el) => {
@@ -330,6 +424,12 @@ export function initProjects(rerender) {
     }
     store.saveProject({ id: pid, rule });
     refreshProjectEditor();
+  });
+
+  // 默认深度：已有的计划一改，它的任务跟着一起改（新建框里的等 Create）
+  on(document, "change", ".project-editor [data-pdeep]", (e, el) => {
+    const pid = el.closest("[data-pid]").dataset.pid;
+    if (pid) store.setPlanDeep(pid, el.checked);
   });
 
   on(document, "change", ".project-editor [data-if]", (e, el) => {
