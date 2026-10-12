@@ -5,34 +5,32 @@
 //   track    Projects 页上看它什么（进度 / 每周够不够钟点 / Relax 在不在范围里 / 多久没联系 / 不看），见最下面的 trackOf；min = 够不够的那个钟点（分钟）
 // 任务可以直接挂在大类上（task.group），不一定要挂在哪个计划下面。只算数，不碰页面和存储。
 
-// 颜色照油画颜料来：绿 viridian、蓝 ultramarine、橘 cadmium orange、紫 mauve、白 ivory、棕 burnt sienna、赭黄 ochre、茜红 alizarin
-export const PALETTE = ["#3E8E6E", "#3F62B5", "#E07A2B", "#8B62AE", "#E6DCC3", "#9A5A36", "#D2A52E", "#B5413F"];
-const [GREEN, BLUE, ORANGE, PURPLE, IVORY, BROWN, OCHRE, CRIMSON] = PALETTE;
+// 色板（Projects 页和大类里能选的颜色，顺序就是色块的顺序；新建的大类 / 计划也按这个顺序轮着取色）
+export const PALETTE = ["#8E354A", "#81C7D4", "#CB1B45", "#86C166", "#F05E1C", "#FEDFE1", "#A8497A", "#8F77B5", "#0F4C3A", "#42602D"];
+const [WINE, CYAN, CRIMSON, LEAF, ORANGE, BLUSH, PLUM, LAVENDER, FOREST, OLIVE] = PALETTE;
 
 export const DEFAULTS = [
-  { name: "Work", color: BLUE, labor: true, grow: "all" },
-  { name: "Fitness", color: IVORY, labor: false, grow: "all" },
-  { name: "Chores", color: BROWN, labor: true, grow: "" },
-  { name: "Build", color: GREEN, labor: true, grow: "all" },
-  { name: "Leisure", color: ORANGE, labor: false, grow: "deep" },
-  { name: "Friends", color: PURPLE, labor: true, grow: "", friends: true }
+  { name: "Work", color: FOREST, labor: true, grow: "all" },
+  { name: "Fitness", color: ORANGE, labor: false, grow: "all" },
+  { name: "Chores", color: OLIVE, labor: true, grow: "" },
+  { name: "Build", color: CYAN, labor: true, grow: "all" },
+  { name: "Leisure", color: PLUM, labor: false, grow: "deep" },
+  { name: "Friends", color: LAVENDER, labor: true, grow: "", friends: true }
 ];
 
-// 圆盘上用的霓虹版：色块压在金属上，要比油画色亮得多。八个颜色一个对一个（绿 → 薄荷霓虹、蓝 → 电光蓝、橘 → 霓虹橙、紫 → 霓虹紫、
-// 白 → 纯白、棕 → 琥珀、赭黄 → 霓虹黄、茜红 → 霓虹红）；自己另选的颜色没有对应的，返回空（圆盘那边会把它调亮）
-const NEON = { [GREEN]: "#00E58F", [BLUE]: "#3A6BFF", [ORANGE]: "#FF6A00", [PURPLE]: "#B44CFF", [IVORY]: "#FFFFFF", [BROWN]: "#FFB300", [OCHRE]: "#FFE500", [CRIMSON]: "#FF2D4A" };
+// 圆盘上用的霓虹版：色块压在金属上，要比色板里的颜色亮得多。十个颜色一个对一个；
+// 自己另选的颜色没有对应的，返回空（圆盘那边会把它调亮）
+const NEON = {
+  [WINE]: "#FF3D6E", [CYAN]: "#00E5FF", [CRIMSON]: "#FF2D4A", [LEAF]: "#7CFF4D", [ORANGE]: "#FF6A00",
+  [BLUSH]: "#FF9EC0", [PLUM]: "#FF4FA3", [LAVENDER]: "#B44CFF", [FOREST]: "#00E58F", [OLIVE]: "#B6FF3B"
+};
 export const neon = (c) => NEON[String(c || "").toUpperCase()] || "";
 
-// 三个大类换过默认颜色（Fitness 橘 → 白、Leisure 紫 → 橘、Friends 白 → 紫）：三个都还是原来那套才换，换过一次就不再满足、不会重复；
-// 自己改过其中任何一个的不动。→ [{ name, color }]（要换的；没有就是空）
-const RECOLOR = [["Fitness", ORANGE, IVORY], ["Leisure", PURPLE, ORANGE], ["Friends", IVORY, PURPLE]];
-export function recolor(list) {
-  const hits = RECOLOR.map(([name, from, to]) => { const g = (list || []).find((x) => match(x.name) === name); return g && String(g.color || "").toUpperCase() === from ? { name: g.name, color: to } : null; });
-  return hits.every(Boolean) ? hits : [];
-}
+// 以前换默认颜色时用的一次性迁移，色板换新以后不再需要：保留这个函数是因为 store.js 还在调用它，永远返回空
+export const recolor = () => [];
 
 // 以前那套亮色 → 现在的颜色（没归进大类的计划换一次）
-const OLD_COLORS = { "#B8F000": GREEN, "#C6FF00": GREEN, "#2F5BFF": BLUE, "#FF3EA5": CRIMSON, "#FF7A1A": ORANGE, "#9B5CFF": PURPLE, "#00C2A8": GREEN, "#FFC400": OCHRE, "#FF4D4D": BROWN };
+const OLD_COLORS = { "#B8F000": LEAF, "#C6FF00": LEAF, "#2F5BFF": CYAN, "#FF3EA5": PLUM, "#FF7A1A": ORANGE, "#9B5CFF": LAVENDER, "#00C2A8": FOREST, "#FFC400": ORANGE, "#FF4D4D": CRIMSON };
 export const newColor = (c) => OLD_COLORS[String(c || "").toUpperCase()] || c || "";
 
 // 旧名字归到哪个大类：「Main - English」→ Build，「Work 1」→ Work，「Fun」→ Leisure……认不出的返回空
