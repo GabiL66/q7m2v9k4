@@ -169,14 +169,25 @@ body.side-min .sync-pill span { display: none; }
 [data-theme="light"] .page-head h2, [data-theme="light"] .phead h1 { color: var(--blue); }
 [data-theme="light"] .big, [data-theme="light"] .tv { color: var(--hot); }
 
-/* ---------- 迪斯科球 ---------- */
-.ball { width: 18px; height: 18px; flex-shrink: 0; border-radius: 50%; cursor: pointer; animation: spin 9s linear infinite;
-  background: radial-gradient(circle at 32% 28%, #fff 0 12%, rgba(255, 255, 255, 0) 42%), conic-gradient(from 20deg, #f2f2f5, #8a8c97, #fafafc, #6c6e7c, #e1e2e8, #9c9eaa, #f2f2f5);
-  box-shadow: 0 0 0 1.5px var(--edge), 2px 2px 0 var(--edge); }
-[data-theme="dark"] .ball {
-  background: radial-gradient(circle at 31% 27%, rgba(255, 255, 255, .95), rgba(255, 255, 255, 0) 44%), repeating-linear-gradient(0deg, rgba(255, 255, 255, .35) 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, rgba(255, 255, 255, .35) 0 1px, transparent 1px 4px), repeating-conic-gradient(#CCFF00 0 12deg, #00E5FF 12deg 24deg, #FF2BD6 24deg 36deg, #8B5CFF 36deg 48deg, #FF9100 48deg 60deg);
-  box-shadow: 0 0 14px rgba(204, 255, 0, .6), 0 0 28px rgba(255, 43, 214, .4); }
+/* ---------- 日月（侧栏左上 / 手机顶栏，点一下换白天夜里；js/ui/common.js 的 ballHTML） ----------
+   白天是太阳：黄 → 橙 → 粉 → 紫的渐变圆，下半截镂三道横纹；夜里是月亮：冰蓝的满月，几块淡淡的明暗，一圈蓝的光晕。
+   两样都带一层镜面球的细格，两种转法一起走：整颗在平面里慢慢转（spin），格子的经线绕着竖轴扫过去（ball-lon）。
+   底色和横纹的 mask 在里面的 svg 上，光晕在按钮上（放一起光晕会被 mask 吃掉） */
+.ball { flex-shrink: 0; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: none; animation: spin 9s linear infinite; }
+.ball svg { display: block; width: 100%; height: 100%; border-radius: 50%; }
+[data-theme="light"] .ball { filter: drop-shadow(0 0 3px rgba(255, 120, 90, .6)); }
+[data-theme="light"] .ball svg { background: linear-gradient(180deg, #FFD84A, #FF9F3D 34%, #FF4F8B 68%, #C24BD6);
+  -webkit-mask: linear-gradient(#000 0 56%, transparent 56% 60%, #000 60% 70%, transparent 70% 75.5%, #000 75.5% 84%, transparent 84% 91%, #000 91%);
+  mask: linear-gradient(#000 0 56%, transparent 56% 60%, #000 60% 70%, transparent 70% 75.5%, #000 75.5% 84%, transparent 84% 91%, #000 91%); }
+[data-theme="dark"] .ball { filter: drop-shadow(0 0 3px rgba(120, 225, 255, .9)) drop-shadow(0 0 9px rgba(70, 130, 255, .6)); }
+[data-theme="dark"] .ball svg { background: radial-gradient(circle at 66% 40%, rgba(30, 110, 220, .28) 0 12%, transparent 24%),
+  radial-gradient(circle at 40% 70%, rgba(30, 110, 220, .22) 0 14%, transparent 28%), radial-gradient(circle at 38% 34%, #F4FFFF, #BFF4FF 38%, #62CEFF 72%, #3393EA); }
+.ball-grid { fill: none; stroke: #fff; stroke-opacity: .55; stroke-width: .5px; }
+.ball-grid path { vector-effect: non-scaling-stroke; }
+.ball-lon { transform-box: view-box; transform-origin: 50px 50px; transform: scaleX(var(--a)); animation: ball-lon 1.3s linear infinite; }
+.ball-shine { fill: #fff; fill-opacity: .58; }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes ball-lon { to { transform: scaleX(var(--b)); } }
 
 /* ---------- 今天 ---------- */
 .today-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, 1fr); gap: 14px; align-items: start; }
@@ -200,6 +211,7 @@ body.side-min .sync-pill span { display: none; }
 .pset .ic { width: 20px; height: 20px; }
 .pread { display: inline-flex; flex-shrink: 0; align-items: center; gap: 5px; height: 30px; padding: 0 10px 0 8px; border: var(--b-ctl); border-radius: 999px; background: var(--bg); font-size: 12.5px; font-weight: 700; text-decoration: none; color: var(--ink); }
 .pread .ic { width: 16px; height: 16px; }
+.pread.pico { justify-content: center; width: 30px; padding: 0; }
 [data-theme="dark"] .pread { background: var(--surface); }
 .phone-settings .card { padding: 16px; }
 .phone-settings .btns .btn { flex: 1; }
@@ -331,7 +343,8 @@ body.side-min .sync-pill span { display: none; }
 .add-main .min { width: 64px; text-align: center; border: var(--b-ctl); }
 .add-main .btn { padding: 0 14px; }
 .add-more { display: none; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
-.add:focus-within .add-more, .add:has(select.open) .add-more { display: flex; }
+/* 这一排平时收着：表单里有焦点、下拉开着时出来；已经打了名字或选了 Project 的，焦点走开也留着（不然刚选完就收起来，重画后焦点也还不回去） */
+.add:focus-within .add-more, .add:has(select.open) .add-more, .add:has(input[name="title"]:not(:placeholder-shown)) .add-more, .add:has(select[name="project"] option:checked:not([value=""])) .add-more { display: flex; }
 .add-more select { padding: 7px 10px; font-size: 13px; border: var(--b-ctl); }
 
 .pfoot { display: flex; align-items: center; gap: 10px; margin-top: 22px; }
@@ -415,6 +428,14 @@ body.dragging, body.dragging * { cursor: grabbing !important; -webkit-user-selec
 .pi .g { width: 7px; height: 12px; flex-shrink: 0; opacity: .5; background: radial-gradient(circle, var(--muted) 1.1px, transparent 1.4px) 0 0/3.5px 4px; }
 .pi span { flex: 1; min-width: 0; }
 .pi b { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+/* 任务池里的 Ideas：有日子、还没排的灵感，只列字（不是能拖的色块）；鼠标停着的那行才露出 +（放到那天） */
+.idea-due ul { margin: 0; padding: 0; list-style: none; }
+.idea-due li { display: flex; align-items: baseline; gap: 7px; padding: 4px 2px 4px 18px; font-size: 13px; line-height: 1.35; }
+.idea-due-t { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.idea-due em { flex-shrink: 0; font: 500 11.5px var(--num); font-style: normal; color: var(--muted); white-space: nowrap; }
+.idea-due button { flex-shrink: 0; align-self: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 6px; background: var(--surface); font: 700 14px/18px var(--body); color: var(--ink); opacity: 0; }
+.idea-due li:hover button, .idea-due button:focus-visible { opacity: 1; }
+.idea-due button:hover { background: var(--accent); color: var(--accent-ink); }
 .pool-hint { margin-top: 18px; font-size: 12px; color: var(--muted); }
 .forecast { margin-top: 22px; }
 .forecast h4 { margin: 0 0 8px; font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
@@ -592,6 +613,8 @@ body.phone .settings .page-head { margin-top: 4px; }
 .col .pl { width: min(100%, 24px); background: var(--track); }
 .col .dn { width: min(60%, 14px); background: var(--accent); box-shadow: inset 0 0 0 1.5px var(--edge); }
 .col .dn.solo { width: min(100%, 24px); }
+/* 柱子多的时候（Season / Year，js/ui/stats.js 的 dense）每根只有几像素宽，黑边会把青柠盖掉：换成细的深绿边 */
+[data-theme="light"] .cols[data-dense] .col .dn { box-shadow: inset 0 0 0 1px #8FBF00; }
 .col .ln { width: min(100%, 24px); height: 2px; margin-bottom: -1px; border-radius: 1px; background: var(--ink); }
 .col.future .pl { opacity: .5; }
 .cap-label { position: absolute; margin-bottom: 4px; font-size: 11px; font-weight: 600; color: var(--ink); white-space: nowrap; }
@@ -647,6 +670,15 @@ body.phone .settings .page-head { margin-top: 4px; }
 .st-two { display: grid; grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr); gap: 0 12px; align-items: stretch; }
 .st-two > * { margin-bottom: 10px; }
 @media (max-width: 1100px) { .st-two { grid-template-columns: minmax(0, 1fr); } }
+/* 花了多久 / 深度那两个数字竖着叠成窄窄一列，挨着 Weekly rhythm；窄了就回到上面并排两块 */
+.st-rhythm { display: grid; grid-template-columns: minmax(170px, 210px) minmax(0, 1fr); gap: 0 12px; align-items: stretch; }
+.st-rhythm > * { margin-bottom: 10px; }
+.st-rhythm .kpis { grid-template-columns: minmax(0, 1fr); grid-auto-rows: 1fr; }
+.st-rhythm .tile { padding: 9px 11px; }
+.st-rhythm .tv { margin: 3px 0 2px; font-size: 20px; }
+.st-rhythm .ts { font-size: 11.5px; }
+.st-rhythm .delta { margin-top: 5px; font-size: 11px; }
+@media (max-width: 1100px) { .st-rhythm { grid-template-columns: minmax(0, 1fr); } .st-rhythm .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* 深度（.tide；别叫 .dp，那是任务名后面「◆ Deep」小字的类，带 margin，会把这一段挤偏）：柱子还是那一根青柠。
    深度大概到哪，哪里漫上来一道电光蓝的潮水：顶上的浪边是虚的（不画线，不用知道得那么准），在慢慢走；往下二十来像素就淡没了，
    像浪打在岸上那一小段。两层浪（.wv / .wv.b）波长、快慢、方向都不一样，叠出层次；整道水还会很轻地涨落。
@@ -687,6 +719,12 @@ body.phone .settings .page-head { margin-top: 4px; }
 .pie svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .slice { fill: none; stroke-width: 15; cursor: default; transition: stroke-width .15s; }
 .slice.hot { stroke-width: 18; }
+/* 项目那几片和圆盘上的色块一个画法：--c 是项目颜色的霓虹版（没有霓虹版的调亮）；白天底下垫一版错开的藏青（.slice-sh），夜里发光 */
+.slice.ink { stroke: var(--c); }
+.slice.ink.boost { stroke: oklch(from var(--c) calc(l + .12) calc(c * 1.9) h); }
+.slice-sh { display: none; fill: none; stroke: #171C55; stroke-width: 15; pointer-events: none; }
+[data-theme="light"] .slice-sh { display: inline; }
+[data-theme="dark"] .slice.ink { filter: drop-shadow(0 0 2.2px var(--c)); }
 .dring { fill: none; stroke: var(--ink); stroke-width: 3; pointer-events: none; }
 .pie-c { position: absolute; top: 50%; left: 50%; display: grid; justify-items: center; width: 56%; transform: translate(-50%, -50%); text-align: center; font-size: 11.5px; line-height: 1.35; color: var(--muted); pointer-events: none; }
 .pie-c b { font-size: 16px; line-height: 1.15; letter-spacing: -.02em; color: var(--ink); }
@@ -744,6 +782,25 @@ body.phone .settings .page-head { margin-top: 4px; }
 ::view-transition { pointer-events: none; }
 ::view-transition-group(*) { animation-duration: .3s; animation-timing-function: var(--ease); }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: .2s; }
+/* 白天夜里互换（html[data-vt="theme"]）：整页当一张图慢慢淡过去，底边泛一阵霞光（#dusk），那颗日月（.ball）原地换班。
+   霞光只在过渡里出现一下就拿掉（js/motion.js），会动的（明暗）放在 ::before 上，元素本身不动；日月在过渡里单独起一个名字（orb）。
+   这样它们照自己的节奏走，不跟着整页淡 */
+html[data-vt="theme"]::view-transition-old(root), html[data-vt="theme"]::view-transition-new(root) { animation-duration: 1.3s; animation-timing-function: ease; }
+html[data-vt="theme"] #dock, html[data-vt="theme"] #main .hero .meter .fill { view-transition-name: none; }
+::view-transition-new(dusk) { animation: none; }
+#dusk { position: fixed; inset: auto 0 0; z-index: 44; height: 75vh; pointer-events: none; view-transition-name: dusk; }
+#dusk::before { content: ""; position: absolute; inset: 0; opacity: 0; animation: dusk 1.6s ease both; }
+/* 朝霞（进白天）是黄 → 橙 → 粉，晚霞（进夜里）是玫红 → 紫 → 蓝 */
+#dusk[data-k="dawn"]::before { background: radial-gradient(65% 100% at 50% 100%, rgba(255, 226, 89, .8), rgba(255, 150, 60, .55) 40%, rgba(255, 105, 150, .3) 62%, transparent 80%); }
+#dusk[data-k="dusk"]::before { background: radial-gradient(65% 100% at 50% 100%, rgba(255, 62, 165, .72), rgba(140, 60, 255, .5) 44%, rgba(47, 91, 255, .26) 64%, transparent 80%); }
+@keyframes dusk { 35% { opacity: 1; } 100% { opacity: 0; } }
+/* 日月换班：原来那颗原地淡出，新的那颗淡入时往上升一小下（屏幕上没有它的页面就只有霞光） */
+html[data-vt="theme"] .ball { view-transition-name: orb; }
+html[data-vt="theme"]::view-transition-old(orb), html[data-vt="theme"]::view-transition-new(orb) { mix-blend-mode: normal; }
+html[data-vt="theme"]::view-transition-old(orb) { animation: orb-out .5s ease both; }
+html[data-vt="theme"]::view-transition-new(orb) { animation: orb-in 1.1s cubic-bezier(.2, .8, .2, 1) .2s both; }
+@keyframes orb-out { to { opacity: 0; transform: scale(.94); } }
+@keyframes orb-in { from { opacity: 0; transform: translateY(5px) scale(.9); } }
 #dock { view-transition-name: dock; }
 #main .hero .meter .fill { view-transition-name: meter; }
 html[data-vt] .row.enter { animation: none; }
@@ -939,16 +996,32 @@ body.phone .reading { padding: 0 2px 90px; }
 /* 任务的色块压在金属上要跳出来：--c 已经是项目颜色的霓虹版（js/groups.js 的 neon）；自己另选的颜色没有霓虹版（.boost），
    就按同一个色相调亮、调艳（不认这个写法的浏览器留在上面那行的原色）。夜里是发光的整块；白天见下面的笔触 */
 .sun .arc.boost { stroke: oklch(from var(--c, #B4B4BC) calc(l + .12) calc(c * 1.9) h); }
-/* 白天：任务的色块是刷在金属上的油画笔触（.brush，js/ui/sun.js 的 brush()）；整块的那条弧透明着，只接手指，选中时在笔触底下垫一圈墨色。
-   笔毛的颜色从 --c 调：.lt 往白里混一点、.dk 往黑里混一点（--k）。夜里不画笔触，还是发光的整块 */
-.sun .brush { display: none; --c: var(--c0); pointer-events: none; }
-.sun .brush.boost { --c: oklch(from var(--c0) calc(l + .12) calc(c * 1.9) h); }
-[data-theme="light"] .sun .brush { display: inline; opacity: .5; transition: opacity .25s; }
-[data-theme="light"] .sun .brush path { fill: none; stroke: var(--c); stroke-width: 3.9; }
-[data-theme="light"] .sun .brush path.lt { stroke: color-mix(in srgb, var(--c), #FFFFFF var(--k, 8%)); }
-[data-theme="light"] .sun .brush path.dk { stroke: color-mix(in srgb, var(--c), #000000 var(--k, 8%)); }
-[data-theme="light"] .sun .arc.lit + .brush { opacity: 1; }
-[data-theme="light"] .sun .arc.live.lit + .brush { animation: breathe 1.6s ease-in-out infinite; }
+/* 白天整个是丝网印的画法（夜里不变：镜面铬 + 发光的整块）：
+   两圈平涂的灰（盖掉铬的渐变），底下各垫一版错开一点的粉和青蓝（.reg，套印没对准露出来的边）；
+   任务的色块（.print，js/ui/sun.js 的 print()）= 平涂的霓虹色 + 错开垫着的一版藏青；整块的那条弧透明着，只接手指，选中时垫一圈墨色；
+   最上面压两层颗粒（.sun-grain：深的一层正片叠底、白的一层滤色），是平铺的噪点图，用 mask 切成两圈的形状 */
+[data-theme="light"] .sun .trk.day { stroke: #D6D7DC; }
+[data-theme="light"] .sun .trk.night { stroke: #8B8E9B; }
+.sun .reg { display: none; }
+[data-theme="light"] .sun .reg { display: inline; }
+.sun .reg circle { fill: none; stroke-width: 18; pointer-events: none; }
+.sun .reg .p { stroke: #FF4FA8; }
+.sun .reg .c { stroke: #19C3F0; }
+.sun .print { display: none; --c: var(--c0); pointer-events: none; }
+.sun .print.boost { --c: oklch(from var(--c0) calc(l + .12) calc(c * 1.9) h); }
+[data-theme="light"] .sun .print { display: inline; opacity: .5; transition: opacity .25s; }
+.sun .print path { fill: none; stroke-width: 18; }
+.sun .print .sh { stroke: #171C55; }
+.sun .print .ink { stroke: var(--c); }
+[data-theme="light"] .sun .arc.lit + .print { opacity: 1; }
+[data-theme="light"] .sun .arc.live.lit + .print { animation: breathe 1.6s ease-in-out infinite; }
+.sun-grain { display: none; position: absolute; inset: 0; border-radius: 50%; pointer-events: none; mix-blend-mode: multiply; opacity: .75;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.15' numOctaves='2' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .05 0 0 0 0 .06 0 0 0 0 .2 0 0 0 -2.2 1.25'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E") 0 0 / 180px 180px;
+  -webkit-mask: radial-gradient(closest-side, transparent 50.5%, #000 50.5% 69.5%, transparent 69.5% 72.5%, #000 72.5% 91.5%, transparent 91.5%); mask: radial-gradient(closest-side, transparent 50.5%, #000 50.5% 69.5%, transparent 69.5% 72.5%, #000 72.5% 91.5%, transparent 91.5%); }
+.sun-grain.w { mix-blend-mode: screen; opacity: .5; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='16' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 2.4 -1.45'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E"); }
+[data-theme="light"] .sun-grain { display: block; }
+[data-theme="light"] .sun .now { stroke: var(--hot); }
+[data-theme="light"] .sun .now-dot { fill: var(--hot); }
 [data-theme="light"] .sun .arc:not(.fixed) { stroke-opacity: 0; }
 [data-theme="light"] .sun .arc.on:not(.fixed) { stroke: var(--ink); stroke-opacity: 1; opacity: 1; }
 .sun .arc.lit { opacity: 1; }
@@ -1266,6 +1339,10 @@ body.phone .mcoming { margin-top: 10px; padding: 10px 12px; }
 .goals .gtag { field-sizing: content; max-width: 92px; padding: 0 7px 0 9px; border: 0; border-radius: 999px; background: var(--surface); box-shadow: inset 3px 0 0 var(--pc); font-size: 10.5px; font-weight: 600; line-height: 18px; }
 .goals .gtag.none { padding-left: 7px; box-shadow: none; color: var(--muted); opacity: 0; }
 .gl:hover .gtag.none, .goals .gtag.none:focus, .goals .gtag.none.open { opacity: 1; }
+/* 项目的标签压成一个色点（名字在 title 里，点它照旧弹出下拉）；还没标签的是一个悬停才出现的空心点。自己写的标签（没有颜色）照旧是字 */
+.goals .gtag.dot, .goals .gtag.none { field-sizing: fixed; flex-shrink: 0; width: 12px; height: 12px; min-height: 0; padding: 0; border-radius: 50%; font-size: 0; line-height: 0; color: transparent; cursor: pointer; }
+.goals .gtag.dot { background: var(--pc); box-shadow: 0 0 0 1.5px var(--edge); }
+.goals .gtag.none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
 .gdue { padding: 0 1px; border: 0; background: none; font: 600 11px var(--num); color: var(--muted); white-space: nowrap; }
 .gdue:hover { color: var(--ink); text-decoration: underline; }
 .gl.late .gdue { color: var(--warn); }
@@ -1505,3 +1582,104 @@ select.open { border-color: var(--edge); }
 [data-theme="light"] .bar, [data-theme="light"] .pj::before, [data-theme="light"] .pdot { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .22); }
 [data-theme="light"] .ev { box-shadow: inset 3px 0 0 var(--c), inset 4px 0 0 rgba(0, 0, 0, .08); }
 [data-theme="light"] .pie .slice { filter: drop-shadow(0 0 .35px rgba(0, 0, 0, .55)); }
+[data-theme="light"] .pie-legend i { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .22); }
+
+/* ---------- 灵感池（Projects 页的 Ideas）；加任务框底下的候选（.idea-pick）。这一段的类名都以 idea- 开头 ---------- */
+.idea-page { max-width: 760px; }
+/* 手机上查灵感的那一页（#ideas）：只看和搜 */
+.phone-ideas .idea-seek { width: 100%; margin: 4px 0 16px; padding: 10px 12px; border: var(--b-ctl); border-radius: 12px; font-size: 16px; }
+.phone-ideas .idea-row { min-height: 40px; padding: 8px 0; }
+.phone-ideas .idea-note { flex-basis: 100%; white-space: normal; }
+.idea-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
+.idea-add input[name="text"] { flex: 1 1 260px; min-width: 0; padding: 9px 12px; border: var(--b-ctl); border-radius: 12px; background: var(--bg); font-size: 15px; font-weight: 600; }
+.idea-add input[type="date"], .idea-row input[type="date"], .idea-plan input, .idea-plan select { padding: 5px 9px; border: var(--b-ctl); border-radius: 10px; background: var(--bg); font-size: 13px; }
+.idea-add .link { font-size: 12.5px; }
+.idea-kinds { display: inline-flex; gap: 5px; }
+.idea-intro { max-width: 560px; margin: 0 0 14px; }
+.idea-group { margin-bottom: 16px; }
+.idea-h { margin: 0 0 2px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.idea-h small { margin-left: 4px; font-weight: 600; letter-spacing: 0; opacity: .7; }
+.idea-list { margin: 0; padding: 0; list-style: none; }
+.idea-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 36px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.idea-text { padding: 0; border: 0; background: none; font-size: 14.5px; font-weight: 600; text-align: left; }
+.idea-when { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.idea-note { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
+.idea-acts { margin-left: auto; opacity: 0; transition: opacity .15s; }
+.idea-row:hover .idea-acts, .idea-row:focus-within .idea-acts { opacity: 1; }
+.idea-acts .link { font-size: 12.5px; }
+.idea-row .idea-kinds .chip { padding: 1px 8px; font-size: 11.5px; color: var(--muted); }
+.idea-row.planned .idea-text { font-weight: 500; color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
+.idea-row.missed .idea-text { color: var(--muted); }
+.idea-row.missed .idea-when { color: var(--warn); }
+.idea-row.editing { gap: 8px; padding: 8px 0; }
+.idea-row.editing .idea-kinds .chip.on { color: var(--accent-ink); }
+.idea-in { flex: 1 1 200px; min-width: 0; padding: 6px 10px; border: var(--b-ctl); border-radius: 10px; background: var(--bg); font-size: 14px; font-weight: 600; }
+.idea-in.note { flex-basis: 60%; font-size: 13px; font-weight: 400; }
+.idea-plan { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 0 6px; font-size: 13px; color: var(--muted); }
+.idea-plan .num { width: 62px; text-align: center; color: var(--ink); }
+.idea-plan .btn { padding: 5px 12px; color: var(--ink); }
+[data-theme="dark"] .idea-row.editing .idea-kinds .chip.on { color: var(--accent); }
+.idea-pick { display: none; margin-top: 8px; padding: 7px 9px 5px; border: 1px dashed #CDCDC6; border-radius: 10px; }
+.add:focus-within .idea-pick:not(:empty) { display: block; }
+.idea-pick p { margin: 0 0 4px; font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.idea-pick ul { display: flex; flex-wrap: wrap; gap: 5px 6px; margin: 0 0 5px; padding: 0; list-style: none; }
+.idea-pick button { padding: 3px 10px; border: var(--b-ctl); border-radius: 999px; background: var(--bg); font-size: 12.5px; font-weight: 600; }
+.idea-pick button:hover { background: var(--surface); }
+.idea-pick button.on { border-color: var(--ink); background: var(--ink); color: var(--bg); }
+.idea-pick button small { margin-left: 6px; font-size: 11px; font-weight: 500; color: var(--muted); }
+[data-theme="dark"] .idea-pick { border-color: var(--edge); }
+[data-theme="dark"] .idea-pick button { background: var(--surface); }
+[data-theme="dark"] .idea-pick button.on { border-color: var(--accent); background: rgba(204, 255, 0, .12); color: var(--accent); }
+/* 任务做完了、名字在阅读的 Want 里：那一行底下问一句看完没有 */
+.rfin { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; font-size: 12.5px; }
+.rfin > span { margin-right: 2px; font-weight: 700; color: var(--muted); }
+.rfin .vibe { width: 34px; height: 28px; font-size: 16px; }
+.rfin .link { margin-left: 4px; font-size: 12.5px; }
+/* Restock 页底下的 Buy once（只买一次的）：区头、买过的行、底下那句 Bought (n) */
+.monce { margin-top: 22px; align-items: flex-end; }
+.monce .msub-h { margin: 0 0 4px; padding-top: 0; border-top: 0; }
+.monce .msub b { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.mtable tr.bought td b { font-weight: 500; color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
+.mbought { display: inline-block; margin-top: 8px; font-size: 12.5px; }
+
+/* ---------- To try（Meals → Boxes 页底下）：在外面吃过、想自己做的菜；今天页做完的任务底下记吃了什么（.dish-had）。这一段的类名都以 dish- 开头 ---------- */
+.dish-try { margin-top: 22px; }
+.dish-try .msub-h small { margin-left: 6px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.dish-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.dish-add input { min-width: 0; padding: 7px 11px; border: var(--b-ctl); border-radius: 10px; background: var(--bg); font-size: 13.5px; }
+.dish-add input[name="name"] { flex: 2 1 160px; font-weight: 600; }
+.dish-add input[name="note"] { flex: 1 1 110px; }
+.dish-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 28px; }
+.dish-h { margin: 0 0 2px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.dish-h small { margin-left: 4px; font-weight: 600; letter-spacing: 0; opacity: .7; }
+.dish-col .msub { margin: 4px 0 0; }
+.dish-list { margin: 0; padding: 0; list-style: none; }
+.dish-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-height: 34px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.dish-name { padding: 0; border: 0; background: none; font-size: 14px; font-weight: 600; text-align: left; }
+.dish-note { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
+.dish-from { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.dish-acts { display: inline-flex; align-items: center; gap: 10px; margin-left: auto; opacity: 0; transition: opacity .15s; }
+.dish-row:hover .dish-acts, .dish-row:focus-within .dish-acts { opacity: 1; }
+.dish-acts .link { font-size: 12.5px; }
+.dish-acts .icon-btn { width: 24px; height: 24px; }
+@media (max-width: 1100px) { .dish-cols { grid-template-columns: 1fr; } }
+.dish-more { display: inline-block; margin-top: 8px; font-size: 12px; }
+.dish-had { margin-top: 8px; }
+.dish-quick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; }
+.dish-quick > span { margin-right: 2px; font-weight: 700; color: var(--muted); }
+.dish-quick input { min-width: 0; padding: 5px 10px; border: var(--b-ctl); border-radius: 10px; background: var(--bg); font-size: 13px; }
+.dish-quick input[name="name"] { flex: 1 1 140px; }
+.dish-quick input[name="note"] { flex: 2 1 160px; }
+.dish-quick .btn { padding: 5px 12px; }
+.dish-got { display: flex; flex-wrap: wrap; gap: 5px 6px; margin: 6px 0 0; padding: 0; list-style: none; }
+.dish-got li { display: inline-flex; align-items: center; gap: 5px; padding: 2px 4px 2px 9px; border: var(--b-ctl); border-radius: 999px; background: var(--surface); font-size: 12px; }
+.dish-got li span { color: var(--muted); }
+.dish-got li button { width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); font-size: 13px; line-height: 1; }
+.dish-got li button:hover { color: var(--warn); }
+.dish-got + .msub { margin: 5px 0 0; font-size: 11.5px; }
+/* 阅读页：搜到的想看的旁边那两个标优先级的小按钮；表单里 Priority 那一行的字宽一点 */
+.rprios { display: inline-flex; gap: 4px; margin-left: 8px; vertical-align: 1px; }
+.rprios .chip { padding: 1px 8px; font-size: 11px; color: var(--muted); }
+.rprios .chip.on { color: var(--accent-ink); }
+[data-theme="dark"] .rprios .chip.on { color: var(--accent); }
+.radd:not(.done) .rlab { width: 52px; }

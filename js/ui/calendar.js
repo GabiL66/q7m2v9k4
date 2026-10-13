@@ -8,6 +8,7 @@ import * as E from "../engine.js";
 import { esc, on, icon } from "../dom.js";
 import { addDays, addMonths, startOfWeek, startOfMonth, range, fmtShort, fmtMin, WEEKDAYS, MONTHS, MONTHS_LONG, weekday } from "../dates.js";
 import { colorOf, lineInfo, badgeOf, projectOptions, groupsOf, toast } from "./common.js";
+import { ideasPoolHTML } from "./ideas.js";
 import { openModal } from "./modal.js";
 import { dayModalHTML } from "./today.js";
 import { openTaskEditor } from "./editor.js";
@@ -125,7 +126,7 @@ export function poolHTML(c) {
     });
     h += "</section>";
   }));
-  h += forecastHTML(c) + '<p class="pool-hint">Drag items onto a day. Drag a task back here to unschedule it.</p></div>';
+  h += ideasPoolHTML(c) + forecastHTML(c) + '<p class="pool-hint">Drag items onto a day. Drag a task back here to unschedule it.</p></div>';
   return h;
 }
 
@@ -144,9 +145,7 @@ function forecastHTML(c) {
 export function refreshDayModal() {
   const view = document.querySelector("#modal .dayview");
   if (!openDay || !view) return;
-  const keep = document.activeElement?.dataset?.keep;
-  view.outerHTML = dayModalHTML(store.ctx(), openDay);
-  if (keep) document.querySelector('#modal [data-keep="' + keep + '"]')?.focus();
+  view.outerHTML = dayModalHTML(store.ctx(), openDay);   // 正在填的那几格、焦点，由 main.js 的 restoreKeep 放回去
 }
 
 export function initCalendar(rerender) {

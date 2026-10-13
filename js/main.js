@@ -5,16 +5,17 @@ import * as store from "./store.js";
 import * as sync from "./sync.js";
 import * as reading from "./reading.js";
 import * as Meal from "./meals.js";
-import { esc, on, icon } from "./dom.js";
+import { esc, on, icon, initDateTyping } from "./dom.js";
 import { paintPatterns } from "./patterns.js";
-import { initFx, setFx, burst, confetti, refreshFxColors } from "./fx.js";
-import { toast, lineInfo } from "./ui/common.js";
+import { initFx, setFx, confetti, refreshFxColors } from "./fx.js";
+import { toast, lineInfo, ballHTML } from "./ui/common.js";
 import { initModal, closeModal } from "./ui/modal.js";
 import { initSelect } from "./ui/select.js";
 import { todayHTML, initToday, shownDate } from "./ui/today.js";
 import { calendarHTML, poolHTML, initCalendar, handleDrop, refreshDayModal } from "./ui/calendar.js";
 import { projectsHTML, initProjects, refreshProjectEditor, projectAlerts } from "./ui/projects.js";
 import { initGoals } from "./ui/goals.js";
+import { initIdeas, ideasPhoneHTML } from "./ui/ideas.js";
 import { settingsHTML, initSettings } from "./ui/settings.js";
 import { initEditor, refreshEditor } from "./ui/editor.js";
 import { initDnd } from "./ui/dnd.js";
@@ -24,11 +25,11 @@ import { readingHTML, initReading } from "./ui/reading.js";
 import { mealsHTML, shopHTML, initMeals, refreshMealEditor, mealDrop } from "./ui/meals.js";
 import { friendsHTML, initFriends, refreshFriendEditor, friendsDue } from "./ui/friends.js";
 import { renderSun, initSun } from "./ui/sun.js";
-import { animateNext, takeTransition, nameParts } from "./motion.js";
+import { animateNext, takeTransition, nameParts, dusk } from "./motion.js";
 
 const phoneMQ = matchMedia("(max-width: 760px)");
 const darkMQ = matchMedia("(prefers-color-scheme: dark)");
-const VIEWS = ["today", "calendar", "projects", "stats", "meals", "shop", "reading", "friends", "settings"];
+const VIEWS = ["today", "calendar", "projects", "stats", "meals", "shop", "reading", "ideas", "friends", "settings"];
 const side = document.getElementById("side");
 const main = document.getElementById("main");
 const pool = document.getElementById("pool");
@@ -37,17 +38,30 @@ const dock = document.getElementById("dock");
 function route() {
   let v = location.hash.replace("#", "").split("/")[0] || "today";
   if (!VIEWS.includes(v)) v = "today";
-  if (phoneMQ.matches && v !== "settings" && v !== "reading" && v !== "shop") v = "today";
+  if (phoneMQ.matches && v !== "settings" && v !== "reading" && v !== "shop" && v !== "ideas") v = "today";
+  if (v === "ideas" && !phoneMQ.matches) v = "projects";   // #ideas 是手机上查灵感的那一页；电脑上灵感在 Projects 页里
   return v;
 }
 
+// 白天夜里真的互换的那一下带一段过场（底边的霞光 = js/motion.js 的 dusk；日月换班的样子在 css 里）：先记着要换成什么，等下一次重画在过渡里一起换（draw 开头）。
+// 刚打开、设置里关了动效、页面在后台：直接换
+let themePaint = null, booted = false;
 function applyTheme() {
   const t = store.local().theme;
   const dark = t === "dark" || (t === "auto" && darkMQ.matches);
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#0C0C13" : "#FFFFFF");
-  paintPatterns();
-  refreshFxColors();
+  const html = document.documentElement;
+  const paint = () => {
+    html.dataset.theme = dark ? "dark" : "light";
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#0C0C13" : "#FFFFFF");
+    paintPatterns();
+    refreshFxColors();
+  };
+  const turning = (html.dataset.theme === "dark") !== dark;
+  if (booted && turning && store.local().fx !== false && document.visibilityState === "visible") {
+    themePaint = paint;
+    animateNext("theme");
+    render();
+  } else { themePaint = null; paint(); }
 }
 
 // ---------- 侧栏（电脑） ----------
@@ -59,32 +73,37 @@ function sidebarHTML(c, view) {
   const blocks = [["todo", [["today", "Today", todayOpen || ""], ["calendar", "Calendar", ""], ["projects", "Projects", projectAlerts(c) || ""], ["stats", "Stats", ""]]],
     ["meals", [["meals", "Meals", deals || ""]]], ["read", [["reading", "Reading", ""]]], ["friends", [["friends", "Friends", friendsDue(c.today) || ""]]]];
   const link = ([v, t, n]) => '<a href="#' + v + '" class="' + (view === v ? "on" : "") + '" title="' + t + '">' + icon(v) + "<span>" + t + "</span>" + (n ? "<b>" + n + "</b>" : "") + "</a>";
-  const theme = store.local().theme;
   const st = sync.getStatus();
   // 收起来只剩一列图标（记在这台设备上）：名字放进 title，角标缩成一个点
   const min = Boolean(store.local().sideMin);
-  return '<div class="brand"><span class="ball" data-act="ball"></span><h1>苦昼短</h1>' +
+  return '<div class="brand">' + ballHTML() + "<h1>苦昼短</h1>" +
     '<button type="button" class="icon-btn side-tog" data-act="side-toggle" aria-expanded="' + !min + '" aria-label="' + (min ? "Show" : "Hide") + ' the sidebar labels" title="' + (min ? "Expand" : "Collapse") + '">' + icon(min ? "right" : "left") + "</button></div>" +
     '<nav class="snav">' + blocks.map(([b, links]) => '<div class="sblock" data-b="' + b + '">' + links.map(link).join("") + "</div>").join("") + "</nav>" +
     '<div class="sbot"><nav class="snav">' + link(["settings", "Settings", ""]) + "</nav>" +
-    '<footer class="sfoot"><button type="button" class="sync-pill' + (st.bad ? " bad" : "") + '" data-act="sync" title="Sync now">' + icon("sync") + '<span data-sync-status>' + esc(st.text) + "</span></button>" +
-    '<button type="button" class="icon-btn" data-act="theme-cycle" title="Theme: ' + theme + '">' + icon(theme === "dark" ? "moon" : theme === "light" ? "sun" : "auto") + "</button></footer></div>";
+    '<footer class="sfoot"><button type="button" class="sync-pill' + (st.bad ? " bad" : "") + '" data-act="sync" title="Sync now">' + icon("sync") + '<span data-sync-status>' + esc(st.text) + "</span></button></footer></div>";
 }
 
 // ---------- 整页重画（正在打字的输入框，值、光标都留住） ----------
 
+// 重画前后留住正在填的东西（带 data-keep 的输入框）：页面、任务池，还有弹层——日历里点开某一天的那块也是整块重画的。
+// 记的时候带上它在哪一块里（main / pool / modal），同一个名字在两块里各算各的
+const KEEP_IN = ["main", "pool", "modal"];
+const keepRoot = (el) => el?.closest?.(KEEP_IN.map((id) => "#" + id).join(","))?.id || "";
 function captureKeep() {
   const keep = {};
-  document.querySelectorAll("#main [data-keep], #pool [data-keep]").forEach((el) => {
-    keep[el.dataset.keep] = { value: el.value, checked: el.checked, start: el.selectionStart, end: el.selectionEnd };
-  });
+  for (const id of KEEP_IN) {
+    document.querySelectorAll("#" + id + " [data-keep]").forEach((el) => {
+      keep[id + "|" + el.dataset.keep] = { value: el.value, checked: el.checked, start: el.selectionStart, end: el.selectionEnd };
+    });
+  }
   const a = document.activeElement;
-  return { keep, active: a?.dataset?.keep && a.closest("#main, #pool") ? a.dataset.keep : "" };
+  return { keep, active: a?.dataset?.keep && keepRoot(a) ? keepRoot(a) + "|" + a.dataset.keep : "" };
 }
 
 function restoreKeep({ keep, active }) {
   for (const [k, v] of Object.entries(keep)) {
-    const el = document.querySelector('#main [data-keep="' + k + '"], #pool [data-keep="' + k + '"]');
+    const cut = k.indexOf("|");
+    const el = document.querySelector("#" + k.slice(0, cut) + ' [data-keep="' + k.slice(cut + 1) + '"]');
     if (!el) continue;
     if (el.type === "checkbox") { el.checked = Boolean(v.checked); continue; }
     if (el.value !== v.value) el.value = v.value;
@@ -109,7 +128,11 @@ function frame() {
   const html = document.documentElement, rows = kind === "on";
   html.dataset.vt = kind;
   if (!rows) nameParts(main, false);
-  const vt = document.startViewTransition(() => { draw(); if (!rows) nameParts(main, false); });
+  const vt = document.startViewTransition(() => {
+    draw();
+    if (!rows) nameParts(main, false);
+    if (kind === "theme") dusk(html.dataset.theme === "dark");
+  });
   vt.ready.catch(() => {});   // 页面在后台时过渡会被取消，不算错
   vt.finished.finally(() => {
     if (html.dataset.vt === kind) delete html.dataset.vt;
@@ -118,6 +141,7 @@ function frame() {
 }
 
 function draw() {
+  if (themePaint) { themePaint(); themePaint = null; }
   const c = store.ctx();
   const phone = phoneMQ.matches;
   const view = route();
@@ -126,7 +150,7 @@ function draw() {
   document.body.classList.toggle("side-min", !phone && Boolean(store.local().sideMin));
   const kept = captureKeep();
   side.innerHTML = phone ? "" : sidebarHTML(c, view);
-  main.innerHTML = view === "calendar" ? calendarHTML(c) : view === "projects" ? projectsHTML(c) : view === "stats" ? statsHTML(c) : view === "meals" ? mealsHTML(c) : view === "shop" ? shopHTML(c, phone) : view === "settings" ? settingsHTML(phone) : view === "reading" ? readingHTML(phone) : view === "friends" ? friendsHTML(c) : todayHTML(c, phone);
+  main.innerHTML = view === "calendar" ? calendarHTML(c) : view === "projects" ? projectsHTML(c) : view === "stats" ? statsHTML(c) : view === "meals" ? mealsHTML(c) : view === "shop" ? shopHTML(c, phone) : view === "settings" ? settingsHTML(phone) : view === "reading" ? readingHTML(phone) : view === "ideas" ? ideasPhoneHTML(c) : view === "friends" ? friendsHTML(c) : todayHTML(c, phone);
   if (document.startViewTransition) nameParts(main, true);
   // 打开阅读页：同步时顺便拉一次阅读表格的列表（查重用）
   reading.want(view === "reading");
@@ -144,13 +168,13 @@ function draw() {
   renderSun(c, view === "today" && (!phone || store.local().url) ? shownDate() : "");
   underSun();
   tick();
-  restoreKeep(kept);
   paintSync();
   refreshEditor();
   refreshDayModal();
   refreshProjectEditor();
   refreshMealEditor();
   refreshFriendEditor();
+  restoreKeep(kept);   // 弹层也画完了再放回去
   celebrate(c, view);
 }
 
@@ -209,6 +233,8 @@ function tickDay() {
 // ---------- 启动 ----------
 
 applyTheme();
+booted = true;
+initDateTyping();
 initFx();
 setFx(store.local().fx !== false);
 initModal();
@@ -217,6 +243,7 @@ initToday(render);
 initCalendar(render);
 initProjects(render);
 initGoals(render);
+initIdeas(render);
 initSettings(applyTheme);
 initEditor();
 initDnd((payload, target) => (target.startsWith("m") ? mealDrop(payload, target) : handleDrop(payload, target)));
@@ -228,7 +255,7 @@ initFriends(render);
 initSun();
 
 store.subscribe((meta) => {
-  if (meta.pulled) { adoptGroups(); store.adoptMarks(); store.adoptColors(); }
+  if (meta.pulled) { adoptGroups(); store.adoptMarks(); store.adoptColors(); store.settleIdeas(); }
   if (meta.local) setFx(store.local().fx !== false);
   if (!meta.quiet) render();
   else paintSync();
@@ -239,6 +266,8 @@ reading.subscribe(() => { if (route() === "reading") render(); });
 sync.onStatus(paintSync);
 
 addEventListener("hashchange", () => { closeModal(); animateNext("page"); render(); scrollTo(0, 0); });
+// 弹层里的日期框填完、离开了：填的时候没重画的编辑框（js/ui/modal.js 的 fillingDate）这时补画一次
+on(document, "focusout", "#modal input[type=date]", () => setTimeout(render, 0));
 phoneMQ.addEventListener("change", render);
 darkMQ.addEventListener("change", () => { if (store.local().theme === "auto") { applyTheme(); render(); } });
 document.addEventListener("visibilitychange", () => {
@@ -254,10 +283,9 @@ on(document, "click", ".psync", (e, el) => { if (el.title) toast(el.title); sync
 // 圆盘落着的时候盖在列表上：下面还有内容（没滚到底）就再淡一点
 const underSun = () => document.getElementById("sun")?.classList.toggle("over", document.documentElement.scrollHeight - innerHeight - scrollY > 8);
 addEventListener("scroll", underSun, { passive: true });
-on(document, "click", "[data-act=ball]", (e, el) => { const b = el.getBoundingClientRect(); burst(b.left + b.width / 2, b.top + b.height / 2); });
-on(document, "click", "[data-act=theme-cycle]", () => {
-  const next = { auto: "light", light: "dark", dark: "auto" }[store.local().theme] || "auto";
-  store.setLocal({ theme: next });
+// 那颗日月：点一下，白天换夜里、夜里换白天（之后就不跟系统了；想再跟着系统，去 Settings → Look 选 Auto）
+on(document, "click", "[data-act=theme-flip]", () => {
+  store.setLocal({ theme: document.documentElement.dataset.theme === "dark" ? "light" : "dark" });
   applyTheme();
 });
 on(document, "click", "[data-act=side-toggle]", () => store.setLocal({ sideMin: !store.local().sideMin }));
@@ -268,5 +296,5 @@ if ("serviceWorker" in navigator && location.protocol === "https:") navigator.se
 render();
 // 早上的线要等表格里的数据拉下来再拍；连不上就 6 秒后用本机的
 if (sync.configured()) await Promise.race([syncThenLog(), new Promise((r) => setTimeout(r, 6000))]);
-else { adoptGroups(); store.adoptMarks(); store.adoptColors(); }
+else { adoptGroups(); store.adoptMarks(); store.adoptColors(); store.settleIdeas(); }
 store.ensureTodayLog();

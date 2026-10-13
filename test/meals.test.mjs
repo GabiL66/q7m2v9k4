@@ -242,6 +242,66 @@ test("restock: the date one cycle on, and what's coming in the next three months
   assert.deepEqual(C.months.map((m) => m.total), [20, 20, 20]);
 });
 
+test("restock: things you buy once sit apart, count once, and drop out when bought", () => {
+  const D = { sup: {
+    vit: { id: "vit", name: "Vitamin D", price: 20, n: 30, unit: "d", next: "2026-10-20" },
+    dress: { id: "dress", name: "Dress", price: 120, once: true, next: "2026-11-15", n: 3, unit: "m" },   // 留着的周期不算数
+    lamp: { id: "lamp", name: "Lamp", price: 60, once: true, next: "" },
+    coat: { id: "coat", name: "Coat", price: 300, once: true, next: "2026-09-30" },
+    boots: { id: "boots", name: "Boots", price: 180, once: true, next: "2026-10-25", bought: "2026-10-05" },
+    bag: { id: "bag", name: "Bag", price: 90, once: true, next: "", bought: "2026-10-07" }
+  } };
+  const R = M.restock(D);
+  assert.deepEqual(R.regular.map((s) => s.id), ["vit"]);
+  assert.deepEqual(R.once.map((s) => s.id), ["coat", "dress", "lamp"], "dated first, then by name");
+  assert.deepEqual(R.bought.map((s) => s.id), ["bag", "boots"], "latest first");
+  assert.equal(M.nextAfter("2026-11-15", D.sup.dress), "", "no next time");
+  assert.equal(M.cycleText(D.sup.dress), "");
+  const C = M.coming(D, TODAY);
+  assert.deepEqual(C.overdue.map((x) => x.sup.id), ["coat"]);
+  assert.deepEqual(C.months.map((m) => m.items.map((x) => x.sup.id)), [["vit"], ["dress", "vit"], ["vit"]]);
+  assert.deepEqual(C.months.map((m) => m.total), [20, 140, 20]);
+});
+
+test("to try: two kinds, newest first; lines become dishes", () => {
+  const D = { dish: {
+    a: { id: "a", name: "Beef pho", note: "rare", kind: "box", order: 1 },
+    b: { id: "b", name: "Tiramisu", kind: "once", order: 2, taskId: "t1", from: "Eataly", date: "2026-10-09" },
+    c: { id: "c", name: "Mapo tofu", kind: "box", order: 3 },
+    d: { id: "d", name: "Cannoli", order: 4, taskId: "t1" },   // 没写哪一种 = 只试一次
+    e: { id: "e", name: "Bao", kind: "once", order: 5, taskId: "t2" }
+  } };
+  const T = M.toTry(D);
+  assert.deepEqual(T.box.map((d) => d.name), ["Mapo tofu", "Beef pho"]);
+  assert.deepEqual(T.once.map((d) => d.name), ["Bao", "Cannoli", "Tiramisu"]);
+  assert.deepEqual(M.dishesOf(D, "t1").map((d) => d.name), ["Tiramisu", "Cannoli"], "in the order they were noted");
+  assert.deepEqual(M.dishesOf(D, ""), []);
+  assert.deepEqual(M.toTry({}), { box: [], once: [] });
+  assert.deepEqual(M.parseDishes("- Beef pho\n2. Spring rolls — extra mint\n\nCongee：century egg\nspring  rolls\n• Iced coffee - condensed milk\nStir-fried greens", Object.values(D.dish)), [
+    { name: "Spring rolls", note: "extra mint" }, { name: "Congee", note: "century egg" }, { name: "Iced coffee", note: "condensed milk" }, { name: "Stir-fried greens", note: "" }
+  ]);
+  assert.deepEqual(M.parseDishes("  "), []);
+});
+
+test("store: a dish from a task, then made into a box; undo brings the dish back", () => {
+  let undo = null;
+  store.onUndo((label, before) => { undo = before; });
+  store.addDishes([{ name: "Bun cha", note: "grilled pork, lots of herbs" }, { name: "Egg coffee", note: "" }], { kind: "once", from: "Hanoi Corner", date: "2026-10-10", taskId: "task-1" });
+  const dish = Object.values(store.meals().dish).find((d) => d.name === "Bun cha");
+  assert.deepEqual([dish.kind, dish.from, dish.taskId], ["once", "Hanoi Corner", "task-1"]);
+  assert.ok(store.get("settings", "meal-dish:" + dish.id), "one Settings row each");
+  assert.equal(M.dishesOf(store.meals(), "task-1").length, 2);
+
+  const box = store.dishToBox(dish.id);
+  assert.equal(store.meals().box[box].name, "Bun cha");
+  assert.equal(store.meals().box[box].note, "grilled pork, lots of herbs — had at Hanoi Corner");
+  assert.equal(store.meals().dish[dish.id], undefined, "off the list");
+  store.undo(undo);
+  assert.equal(store.meals().box[box], undefined);
+  assert.equal(store.meals().dish[dish.id].name, "Bun cha");
+  assert.equal(store.dishToBox("nope"), "");
+});
+
 test("import also takes things to restock, matched by name", () => {
   const D = { ing: {}, box: {}, sup: { a: { id: "a", name: "Vitamin D", price: 20, n: 30, unit: "d", next: "2026-10-20" } } };
   const out = M.importRows(D, { sup: [{ name: "vitamin d", store: "Costco" }, { name: "Shampoo" }, { name: " " }] }, () => "new");

@@ -3,14 +3,19 @@
 // 手机上：看今天前后各 5 天的任务、给任务标结果、计时、加任务；右上角齿轮进去只有白天黑夜和连表格。计划都在电脑上做。
 
 import * as store from "../store.js";
+import * as sync from "../sync.js";
 import * as E from "../engine.js";
 import { esc, on, icon } from "../dom.js";
 import { fmtDay, fmtShort, fmtMin, addDays, diffDays, weekday, startOfWeek, WEEKDAYS } from "../dates.js";
 import * as S from "../stats.js";
 import * as F from "../friends.js";
+import * as I from "../ideas.js";
+import * as GR from "../groups.js";
+import * as reading from "../reading.js";
+import * as Meal from "../meals.js";
 import { parseLogLine } from "../times.js";
 import * as R from "../routines.js";
-import { heroHTML, stripHTML, billHTML, colorOf, badgeOf, projectOptions, pickTarget, segStyle, lineInfo, toast, STATUS } from "./common.js";
+import { heroHTML, stripHTML, billHTML, colorOf, badgeOf, projectOptions, pickTarget, segStyle, lineInfo, toast, STATUS, ballHTML } from "./common.js";
 import { openTaskEditor } from "./editor.js";
 import { pickedId, pick, timeable, elapsed } from "./timer.js";
 import { animateNext } from "../motion.js";
@@ -25,6 +30,7 @@ let overdueOpen = false;
 let viewDate = "";
 let focus = "";   // 点开的那一行（四个状态按钮只在这一行）
 const addTarget = {};   // 加任务框里选的是哪个项目 / 计划（日期 → 下拉的值）：能选「和谁」的大类要多画一块
+const ideaDraft = {};   // 加任务框里从灵感池挑中的那条（日期 → 灵感 id）：任务建好后挂上去，池子里就划掉了
 // 这个任务能不能选「和谁」：已经带着一条记录，或者它那个大类开了这一项
 const meetable = (t) => Boolean(store.meetOfTask(t.id) || store.groupByName(store.groupOf(t))?.friends);
 
@@ -63,6 +69,24 @@ function openOf(c, d, tasks) {
 
 const STATUS_WORD = { done: "Done ✓", partial: "Partial", later: "Later", drop: "Drop" };
 
+// 任务标了 Done，名字又在阅读的 Want 里（或者在某一页里还没写日期）：问一句看完没有（电脑）。
+// 点记号 = 记进它那一页、月份用任务那天的；那一页有小类（Book、Game）就接着在同一行点一下小类。Not yet = 这条任务不再问
+let finishing = null;   // 点了记号、还要挑小类的那条：{ taskId, mark }
+const readTab = (want) => reading.logTypes().find((x) => x.toLowerCase() === String(want?.tab || "").toLowerCase()) || "";
+const askFinished = (t) => (t.status === "done" && store.setting("reading")?.url && !reading.askedNotYet(t.id) ? reading.wantOf(t.title) : undefined);
+function finishHTML(t, want) {
+  const tab = readTab(want), later = '<button type="button" class="link" data-act="fin-later">Not yet</button>';
+  // 没写是哪一类、或者那一类只在表格里手写的：去 Reading 页记
+  if (!tab) return '<p class="rfin"><span>Finished it?</span><a class="link" href="#reading">Log it on Reading</a>' + later + "</p>";
+  const kinds = reading.kindsOf(tab);
+  if (finishing?.taskId === t.id && kinds.length) {
+    return '<p class="rfin"><span>' + esc(tab) + " — which kind?</span>" + kinds.map((k) => '<button type="button" class="chip" data-act="fin-kind" data-v="' + esc(k) + '">' + esc(k) + "</button>").join("") +
+      '<button type="button" class="link" data-act="fin-kind" data-v="">Skip</button></p>';
+  }
+  return '<p class="rfin"><span>Finished it?</span>' + reading.MARKS.map((m) => '<button type="button" class="vibe" data-act="fin-mark" data-v="' + m + '">' + m + "</button>").join("") +
+    '<button type="button" class="chip" data-act="fin-mark" data-v="" title="Finished, no rating">✓</button>' + later + "</p>";
+}
+
 // 一行任务。只有展开的那行（openId）带四个状态按钮、计时记录、补时间的框和原因；
 // 别的行只有一行字：分钟、名字、计划，右边是记了多久和状态。电脑上鼠标移上去，状态按钮浮在右边
 function rowHTML(c, t, tasks, phone = false, openId = "") {
@@ -79,6 +103,7 @@ function rowHTML(c, t, tasks, phone = false, openId = "") {
   const picked = timeable(t, c.today) && pickedId(c) === t.id;
   const run = store.timer();
   const running = run?.taskId === t.id;
+  const want = open && !phone ? askFinished(t) : undefined;
   const chips = '<div class="chips' + (open ? "" : " hov") + '">' + STATUS.map(([s, label]) => '<button type="button" class="chip' + (t.status === s ? " on" : "") + '" data-act="status" data-s="' + s + '">' + label + "</button>").join("") +
     (open && t.status === "later" && !movedOn && !phone ? '<button type="button" class="chip ghost" data-act="tomorrow">→ Tomorrow</button>' : "") + "</div>";
   const total = store.timeTotal(t.id);
@@ -101,6 +126,8 @@ function rowHTML(c, t, tasks, phone = false, openId = "") {
     (open || !phone ? chips : "") +
     (open && meetable(t) ? taskMeetHTML(t.id) : "") +
     (form ? logFormHTML(c, t, list) : "") +
+    (want ? finishHTML(t, want) : "") +
+    (open && !phone && canDish(t) ? dishesHTML(t) : "") +
     (why && open ? '<input class="reason" data-act="reason" data-keep="reason-' + t.id + '" placeholder="Why?" value="' + esc(t.reason || "") + '">' : "") +
     (why && !open && t.reason ? '<p class="why">' + esc(t.reason) + "</p>" : "") +
     "</div></div>";
@@ -137,6 +164,9 @@ function noticesHTML(c) {
   const soon = F.comingUp(store.friends(), store.friendSpecial(), c.today, { ahead: 1, back: 0 }, store.occasionDone).groups
     .flatMap((g) => g.items.filter((x) => !x.done).map((x) => (x.friend.name || "Someone") + " — " + g.label + (g.date === c.today ? "" : " tomorrow") + (x.gift ? " 🎁" : "")));
   if (soon.length) h += '<div class="note"><p><b>Friends</b> — ' + soon.map(esc).join("; ") + '.</p><a class="link" href="#friends">Open</a></div>';
+  // 灵感池里快到日子、还没排的（7 天以内）
+  const ideas = I.soon(store.ideas(), taskOf, c.today);
+  if (ideas.length) h += '<div class="note"><p><b>Ideas</b> — ' + ideas.map((i) => esc(i.text + " " + I.whenText(i))).join("; ") + '.</p><button type="button" class="link" data-act="open-ideas">Open</button></div>';
   const use = store.storage();
   if (use.warn) {
     h += '<div class="note warn"><p><b>' + (use.full ? "This device is full." : "Storage on this device runs out in about " + Math.max(1, Math.round(use.daysLeft)) + " days.") + '</b> Archive older tasks to make room.</p><a class="link" href="#settings">Settings → Storage</a></div>';
@@ -144,8 +174,40 @@ function noticesHTML(c) {
   return h;
 }
 
+// 做完的 Leisure / Friends 任务（能从灵感池里挑的那几个大类）底下：记这一顿吃了什么（电脑）。一家可以记好几道；
+// 记下的进 Meals → Boxes 页的 To try，带着任务的名字和日子（只是抄过去的字，和灵感池、和这条任务以后怎么变都没关系）
+const dishOpen = new Set();   // 点开了「+ What I had」的任务
+const canDish = (t) => (t.status === "done" || t.status === "partial") && GR.ideasOf(store.groupByName(store.groupOf(t)));
+function dishesHTML(t) {
+  const list = Meal.dishesOf(store.meals(), t.id), id = esc(t.id);
+  if (!list.length && !dishOpen.has(t.id)) return '<button type="button" class="link dish-more" data-act="dish-open">+ What I had</button>';
+  return '<div class="dish-had"><form class="dish-quick" data-task="' + id + '" autocomplete="off"><span>What did you have?</span>' +
+    '<input name="name" data-keep="dishq-name-' + id + '" placeholder="Dish" aria-label="Dish"><input name="note" data-keep="dishq-note-' + id + '" placeholder="Note" aria-label="Note">' +
+    '<button class="btn" type="submit">Add</button></form>' +
+    (list.length ? '<ul class="dish-got">' + list.map((d) => "<li><b>" + esc(d.name) + "</b>" + (d.note ? "<span>" + esc(d.note) + "</span>" : "") +
+      '<button type="button" data-act="dish-x" data-did="' + esc(d.id) + '" aria-label="Remove ' + esc(d.name) + '">×</button></li>').join("") + '</ul><p class="msub">Saved under Meals → Boxes → To try.</p>' : "") + "</div>";
+}
+
+// 加任务框选的那个大类能不能从灵感池里挑（Settings → Projects 的 Ideas 一列；默认 Leisure 和 Friends）
+const poolFor = (target) => { const g = store.groupByName(store.groupOf(pickTarget(target))); return GR.ideasOf(g) ? g : null; };
+const taskOf = (id) => store.get("tasks", id);
+
+// 标题框底下的候选（电脑）：池子里还没排的灵感，打了字就只留对得上的；再加一小段想看的（Reading 的 Want）——只看「多久没联系」的那种大类（Friends）不加。
+// 点一条 = 名字填进标题框；灵感那条在任务建好后挂上去
+function pickHTML(d, query) {
+  const g = poolFor(addTarget[d] || "");
+  if (!g) return "";
+  const ideas = I.match(store.ideas(), taskOf, store.today(), query);
+  const wants = GR.trackOf(g) === "contact" || !store.setting("reading")?.url ? [] : (reading.titleKey(query) ? reading.search(query, 20).filter((r) => r.want) : reading.wants()).slice(0, 4);
+  const item = (act, id, text, small, on) => '<li><button type="button" data-act="' + act + '" data-id="' + esc(id) + '" data-t="' + esc(text) + '"' + (on ? ' class="on"' : "") + ">" +
+    esc(text) + (small ? "<small>" + esc(small) + "</small>" : "") + "</button></li>";
+  return (ideas.length ? "<p>Ideas</p><ul>" + ideas.map((i) => item("idea-pick", i.id, i.text, i.date && i.date < store.today() ? "was " + fmtShort(i.date) : I.whenText(i), ideaDraft[d] === i.id && I.sameText(i.text, query))).join("") + "</ul>" : "") +
+    (wants.length ? "<p>Want</p><ul>" + wants.map((r) => item("want-pick", "", r.title, r.tab, false)).join("") + "</ul>" : "");
+}
+
 // 加任务；电脑上多两个下拉：怎么重复、重复多久（一键排好整段时间）。◆ Deep = 这是要专心做的（选了计划就跟计划的默认）。
-// 名字后面带一段钟点（Reading 14:00-15:10）= 已经做完的，直接记成一条 Done
+// 名字后面带一段钟点（Reading 14:00-15:10）= 已经做完的，直接记成一条 Done。
+// 手机上多一个 Idea 开关：打开后 Add = 记进灵感池（不建任务），回电脑再归类、挑日子
 function addHTML(c, d, phone = false) {
   const projects = c.projects.filter(E.isActive);
   const target = addTarget[d] || "";
@@ -157,10 +219,10 @@ function addHTML(c, d, phone = false) {
     '<div class="add-more"><select name="project" data-keep="add-plan-' + d + '" aria-label="Project or plan">' + projectOptions(projects, target) + "</select>" +
     (people ? withHTML("add:" + d) : "") +
     '<label class="deep-tog" title="Deep work: focused, one thing at a time"><input type="checkbox" name="deep" data-keep="add-deep-' + d + '"><span>◆ Deep</span></label>' +
-    (phone ? "" : '<select name="repeat" aria-label="Repeat"><option value="">Doesn\'t repeat</option><option value="daily">↻ Every day</option>' +
+    (phone ? '<label class="deep-tog" title="Save it to Ideas instead of adding a task"><input type="checkbox" name="idea" data-keep="add-idea-' + d + '"><span>Idea</span></label>' : '<select name="repeat" aria-label="Repeat"><option value="">Doesn\'t repeat</option><option value="daily">↻ Every day</option>' +
       '<option value="weekdays">↻ Weekdays</option><option value="weekly">↻ Every ' + WEEKDAYS[weekday(d)] + "</option></select>" +
       '<select name="for" aria-label="For how long">' + R.LENGTHS.map(([v, l]) => '<option value="' + v + '"' + (v === R.DEFAULT_LENGTH ? " selected" : "") + ">for " + l + "</option>").join("") + "</select>") +
-    "</div></form>";
+    "</div>" + (phone ? "" : '<div class="idea-pick" data-idea-pick="' + d + '">' + pickHTML(d, document.querySelector('[data-keep="add-title-' + d + '"]')?.value || "") + "</div>") + "</form>";
 }
 
 export function dayParts(c, d) {
@@ -219,8 +281,8 @@ function phoneHTML(c) {
   const bar = '<div class="strip">' + tasks.map((t) => '<i style="flex-grow:' + Math.max(5, Number(t.est) || 0) + ";" + segStyle(t) + '"></i>').join("") + "</div>";
   const toBuy = shopCount(c);   // 下次采购还剩几样（顶栏的 🛒）
   return '<div class="dayview phone-day" data-date="' + d + '">' +
-    '<header class="phead"><div class="l"><h1 data-act="day-today">' + fmtDay(d) + '</h1><span class="ball" data-act="ball" role="button" aria-label="Sparkles"></span></div>' +
-    '<div class="r"><button type="button" class="psync" data-sync-status aria-label="Sync"></button><a class="pread pshop" href="#shop" aria-label="Next shop">' + icon("cart") + (toBuy ? "<span>" + toBuy + "</span>" : "") + '</a><a class="pread" href="#reading">' + icon("reading") + '<span>Reading</span></a><a class="icon-btn pset" href="#settings" aria-label="Settings">' + icon("settings") + "</a></div></header>" + strip +
+    '<header class="phead"><div class="l"><h1 data-act="day-today">' + fmtDay(d) + "</h1>" + ballHTML() + "</div>" +
+    '<div class="r"><button type="button" class="psync" data-sync-status aria-label="Sync"></button><a class="pread pshop" href="#shop" aria-label="Next shop">' + icon("cart") + (toBuy ? "<span>" + toBuy + "</span>" : "") + '</a><a class="pread pico" href="#ideas" aria-label="Ideas">' + icon("idea") + '</a><a class="pread pico" href="#reading" aria-label="Reading">' + icon("reading") + "</a>" + '<a class="icon-btn pset" href="#settings" aria-label="Settings">' + icon("settings") + "</a></div></header>" + strip +
     (store.local().url ? bar + meta + '<div class="list" data-list="' + d + '">' +
       (tasks.length ? tasks.map((t) => rowHTML(c, t, tasks, true, openId)).join("") : E.ghostsOn(c, d).length ? "" : '<div class="empty">' + (d < c.today ? "Nothing was planned this day." : "Nothing planned yet.") + "</div>") + ghostsHTML(c, d) + "</div>" + addHTML(c, d, true)
       : connectHTML()) + "</div>";
@@ -266,8 +328,22 @@ export function initToday(rerender) {
     else if (act === "time-more") { logOpen.add(id); rerender(); }
     else if (act === "time-log") logFromRow(el.closest(".row"));
     else if (act === "tomorrow") store.toTomorrow(id);
+    else if (act === "dish-open") { dishOpen.add(id); rerender(); requestAnimationFrame(() => setTimeout(() => document.querySelector('.dish-quick[data-task="' + CSS.escape(id) + '"] [name=name]')?.focus(), 0)); }
+    else if (act === "dish-x") { const d = store.meals().dish[el.dataset.did]; if (d) store.deleteMeal("dish", d.id, "Removed " + (d.name || "it")); }
+    else if (act === "fin-later") { finishing = null; reading.notYet(id); rerender(); }
+    else if (act === "fin-mark" || act === "fin-kind") {
+      const t = store.get("tasks", id), w = t && reading.wantOf(t.title), tab = readTab(w), v = el.dataset.v;
+      if (!tab) return;
+      if (act === "fin-mark" && reading.kindsOf(tab).length) { finishing = { taskId: id, mark: v }; rerender(); return; }
+      reading.log({ title: w.title, type: tab, year: Number(t.date.slice(0, 4)), month: Number(t.date.slice(5, 7)), mark: act === "fin-kind" ? finishing?.mark || "" : v, kind: act === "fin-kind" ? v : "", note: "" });
+      finishing = null;
+      toast("Logged " + w.title + " in " + tab);
+      rerender();
+      sync.sync();
+    }
     else if (act === "od-toggle") { overdueOpen = !overdueOpen; rerender(); }
     else if (act === "week-seen") store.setLocal({ weekSeen: el.dataset.week });
+    else if (act === "open-ideas") { store.setLocal({ projMode: "ideas" }); location.hash = "projects"; }
     else if (act === "spread") store.spreadOverdue();
     else if (act === "all-today") {
       const c = store.ctx();
@@ -303,6 +379,33 @@ export function initToday(rerender) {
     rerender();
   });
 
+  // 记这一顿吃了什么：回车 / Add = 加一道，接着还能加
+  on(document, "submit", ".dish-quick", (e, form) => {
+    e.preventDefault();
+    const t = store.get("tasks", form.dataset.task);
+    if (!t || !form.name.value.trim()) { form.name.focus(); return; }
+    const rows = Meal.parseDishes(form.name.value, Object.values(store.meals().dish));
+    if (!rows.length) { toast("Already on your To try list"); return; }
+    if (rows.length === 1 && !rows[0].note) rows[0].note = form.note.value.trim();
+    store.addDishes(rows, { kind: "once", from: t.title, date: t.date, taskId: t.id });
+    form.name.value = ""; form.note.value = "";
+    form.name.focus();
+  });
+
+  // 标题框底下的候选：边打边筛；点一条 = 填进标题框（按下去时不让输入框丢焦点，不然候选先收起来、点不着）
+  on(document, "input", '.dayview form[data-add] input[name="title"]', (e, el) => {
+    const box = el.form.querySelector("[data-idea-pick]");
+    if (box) box.innerHTML = pickHTML(el.form.dataset.add, el.value);
+  });
+  on(document, "mousedown", ".idea-pick button", (e) => e.preventDefault());
+  on(document, "click", ".idea-pick button", (e, el) => {
+    const form = el.closest("form"), d = form.dataset.add, input = form.querySelector('input[name="title"]');
+    input.value = el.dataset.t;
+    ideaDraft[d] = el.dataset.act === "idea-pick" ? el.dataset.id : "";
+    el.closest("[data-idea-pick]").innerHTML = pickHTML(d, input.value);
+    input.focus();
+  });
+
   // 「几小时几分」只留数字
   on(document, "input", ".logtime [data-lt=h], .logtime [data-lt=m]", (e, el) => { el.value = el.value.replace(/\D/g, "").slice(0, 3); });
   on(document, "keydown", ".logtime input", (e, el) => { if (e.key === "Enter") { e.preventDefault(); logFromRow(el.closest(".row")); } });
@@ -336,7 +439,20 @@ export function initToday(rerender) {
       const plan = document.querySelector('[data-keep="add-plan-' + form.dataset.add + '"]');
       if (plan) plan.value = "";
       addTarget[form.dataset.add] = "";
+      ideaDraft[form.dataset.add] = "";
     };
+    // 手机上开着 Idea：不建任务，记进灵感池
+    if (f.get("idea") === "on") {
+      const lines = I.parseLines(String(f.get("title")), I.left(store.ideas(), taskOf, store.today()));
+      if (lines.length) store.addIdeas(lines);
+      toast(lines.length ? "Saved to Ideas" : "Already in your ideas");
+      form.querySelector("[name=idea]").checked = false;
+      clear();
+      return;
+    }
+    // 从灵感池挑的那条：标题没再改过，任务建好就挂上去
+    const picked = store.ideaOf(ideaDraft[form.dataset.add] || "");
+    const fromIdea = (id, name) => { if (id && picked && I.sameText(picked.text, name)) store.pickIdea(picked.id, id); };
     // 选好的「和谁」：任务建好后记到它带的那条记录里
     const people = takeWith("add:" + form.dataset.add);
     const withThem = (id) => { if (id && people.length) store.setTaskMeet(id, { friends: people }); };
@@ -345,6 +461,7 @@ export function initToday(rerender) {
     if (log) {
       focus = store.addLogged({ date: fields.date, title: log.title, projectId: fields.projectId, group: fields.group, deep: fields.deep }, log.from, log.to);
       withThem(focus);
+      fromIdea(focus, log.title);
       clear();
       return;
     }
@@ -352,6 +469,7 @@ export function initToday(rerender) {
     const id = how ? store.addRepeating(fields, R.daysFor(how, fields.date, est), R.endFor(fields.date, Number(f.get("for")))) : store.addTask(fields);
     if (how) form.querySelector("[name=repeat]").value = "";
     withThem(id);
+    if (!how) fromIdea(id, title);
     focus = id;
     if (form.dataset.add === store.today()) { pick(id); rerender(); }   // 加完就选中，底部点 Start 就能开始
     clear();
