@@ -60,3 +60,54 @@ export function hourMinutes(from, to) {
 
 // 第 h 个小时的钟点：0 → "06:00"
 export const hourLabel = (h) => String((6 + h) % 24).padStart(2, "0") + ":00";
+
+// ---------- 白天还是夜里：跟着钟点走 ----------
+// 6 点到 18 点是白天（和圆盘两圈是同一条线），其余是夜里，用这台设备的当地时间。
+// 点一下日月 = 先照点的来（local.themeHold = { v: "light" | "dark", until }），管到下一个早 6 点 / 晚 6 点，之后又跟钟点。
+// index.html 开头那段小脚本是同一条规则（第一笔就要画对，等不到模块加载），改这里要一起改；test/day.test.mjs 守着两边一致
+export const DAY_FROM = DIAL_START / 60, DAY_TO = DAY_FROM + 12;
+export const isDaytime = (at = new Date()) => { const h = at.getHours(); return h >= DAY_FROM && h < DAY_TO; };
+
+// 下一次换班（早 6 点或晚 6 点）是什么时候（毫秒）
+export function nextTurn(at = new Date()) {
+  const d = new Date(at), h = d.getHours();
+  d.setMinutes(0, 0, 0);
+  if (h < DAY_FROM) d.setHours(DAY_FROM);
+  else if (h < DAY_TO) d.setHours(DAY_TO);
+  else { d.setDate(d.getDate() + 1); d.setHours(DAY_FROM); }
+  return d.getTime();
+}
+
+// 现在该是哪个样子："light" / "dark"
+export function lookAt(local, at = new Date()) {
+  const h = local?.themeHold;
+  if (h && (h.v === "light" || h.v === "dark") && at.getTime() < Number(h.until)) return h.v;
+  return isDaytime(at) ? "light" : "dark";
+}
+
+// ---------- 天色跟着钟点（底图 #sky 的颜色，js/fx.js 的 tintSky 每分钟看一次） ----------
+// 白天 6–18：早上偏暖（杏、浅粉），白天是平常那片淡蓝，傍晚偏粉偏紫；夜里 18–6：刚入夜带紫、地平线一抹玫红，后半夜最深，天亮前地平线泛青。
+// 关键时刻之间按钟点线性过渡。top / mid / hor = 天顶、半空、地平线三个颜色；pink / blue = 左上那团玫红、右边那团电光蓝有多浓（白天）；
+// stars = 星星亮几成（夜里）。点日月改过白天 / 夜里、和钟点对不上时：白天用正午的天，夜里用后半夜的天
+const DAY_SKY = [[6, "#FFE6D8", "#FFF4EA", "#F6FFC4", 0.32, 0.06], [9, "#E9F3FF", "#FAFCFF", "#EEFFB8", 0.2, 0.15], [15, "#E9F3FF", "#FAFCFF", "#EEFFB8", 0.2, 0.15],
+  [17, "#EDEBFF", "#FFF1F6", "#FFF0B8", 0.34, 0.12], [18, "#F3E2F4", "#FFE7EC", "#FFE0A8", 0.4, 0.08]];
+const NIGHT_SKY = [[18, "#121130", "#19103A", "#3A1244", 0.25], [20, "#0A0A16", "#0B0B18", "#1A0F2E", 0.7], [23, "#07070B", "#07070B", "#0B0B14", 1],
+  [27, "#07070B", "#07070B", "#0B0B14", 1], [29, "#0A0E1E", "#0C1428", "#123040", 0.5], [30, "#141B36", "#1B2A48", "#2C4A66", 0.2]];
+const hexRGB = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const mixHex = (a, b, t) => "#" + hexRGB(a).map((v, i) => Math.round(v + (hexRGB(b)[i] - v) * t).toString(16).padStart(2, "0")).join("").toUpperCase();
+function along(keys, h) {
+  let i = 0;
+  while (i < keys.length - 2 && h > keys[i + 1][0]) i++;
+  const a = keys[i], b = keys[i + 1], t = Math.min(1, Math.max(0, (h - a[0]) / (b[0] - a[0])));
+  return a.map((v, j) => (j === 0 ? h : typeof v === "string" ? mixHex(v, b[j], t) : Math.round((v + (b[j] - v) * t) * 1000) / 1000));
+}
+export function skyAt(dark, at = new Date()) {
+  const h = at.getHours() + at.getMinutes() / 60;
+  if (!dark) {
+    const [, top, mid, hor, pink, blue] = along(DAY_SKY, h >= DAY_FROM && h < DAY_TO ? h : 12);
+    return { top, mid, hor, pink, blue, stars: 0 };
+  }
+  const n = h >= DAY_TO ? h : h < DAY_FROM ? h + 24 : 25;   // 18..30；白天里点成了夜里 = 凌晨一点那样
+  const [, top, mid, hor, stars] = along(NIGHT_SKY, n);
+  return { top, mid, hor, pink: 0, blue: 0, stars };
+}

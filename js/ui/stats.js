@@ -1,19 +1,20 @@
 // 统计页（电脑）。最上面：看哪段时间（Week / Month / Season / Year / 自己选两头；每次打开都从 Month 开始）、只看哪几个项目 / 计划（可以勾好几个）、只看深度。
 // 下面两个页签：
-//   Time —— 时间去哪了：每天的柱子、一天 24 小时的饼图、几点在干活、花了多久和其中多少是深度（窄窄一列，挨着星期几）、时间表（项目 × 日子，点开看它下面的计划）
+//   Time —— 时间去哪了：每天的柱子、一天 24 小时的饼图（带 On the side）、几点在干活（停在星期几上看那天平均多久）、Build 花了多久和其中多少是深度、时间表（项目 × 日子，点开看它下面的计划）。
+//   柱子默认只看 Build、热力图默认看全部（右上角都能切）；大类永远按 Build、Work、Friends、Leisure、Fitness、Chores 排（js/groups.js 的 ORDER）
 // 颜色的规矩：青柠 = 总量（每天的柱子）；项目自己的颜色 = 按项目拆开的图（饼图、时间表、星期几、几点在干活）。
 //   Plan —— 计划执行得怎样：做完多少、守住几天线、估时准不准、各项目、没做完的原因、项目健康
-// 图都是 HTML / SVG 画的，鼠标移上去有读数，数字都另有一份表格 / 图例可以看。「+ Add time」补一段忘了记的时间。
+// 图都是 HTML / SVG 画的，鼠标移上去有读数，数字都另有一份表格 / 图例可以看。
+// 「On the side」在饼图那一块里按月填一个总数：边健身边通勤边看的剧 / 小说（js/stats.js 的 sideHaze），只在饼图里压一段流光。
 
 import * as store from "../store.js";
 import * as S from "../stats.js";
 import * as E from "../engine.js";
 import { esc, on, icon } from "../dom.js";
 import { fmtMin, fmtShort, fmtDay, fmtClock, WEEKDAYS, MONTHS, MONTHS_LONG, weekday, addDays, diffDays, quarterOf } from "../dates.js";
-import { healthPill, groupsOf, projectOptions, pickTarget } from "./common.js";
+import { healthPill, groupsOf } from "./common.js";
 import { hourLabel } from "../day.js";
 import { neon } from "../groups.js";
-import { openModal, closeModal, modalSheet } from "./modal.js";
 
 let kind = "month";   // 档位：每次打开都从 Month 开始，换了以后这次用着的时候一直是它
 let tab = "";         // time / plan
@@ -22,8 +23,9 @@ let custom = null;    // 自己选的两头 { from, to }
 const picks = new Set();   // 只看哪几个：g:<大类> / p:<计划 id> / none（哪都没挂的）；一个都不勾 = 全部，按大类分
 let pickOpen = false;      // 勾选的那块开着：重画时别收起来
 let deepOnly = false;
-let pieMode = "day";  // 饼图：day = 一天 24 小时都算 / logged = 只看记下来的
 let adjust = false;   // 饼图底下「Adjust」开着
+const view = { trend: "build", heat: "all" };   // 柱子默认只看 Build、热力图默认 All（她定的）；这次打开记着
+let sideMonth = "";   // On the side 那一格选着的月份
 const tips = {};   // 图表 id → 每根柱子的读数
 
 const PREV = { week: "last week", month: "last month", season: "last season", year: "last year", custom: "the stretch before" };
@@ -87,16 +89,18 @@ function tile(label, value, sub, dlt = "") {
   return '<div class="tile"><p class="tl">' + label + '</p><p class="tv">' + value + "</p>" + (sub ? '<p class="ts">' + sub + "</p>" : "") + dlt + "</div>";
 }
 
-// Time 页签：花了多久、其中多少深度
-function timeKpis(s, p) {
-  const deepSub = s.goal
-    ? "Goal " + fmtMin(s.goal) + " a day · reached on " + s.goalHit + " of " + s.goalDays + (s.goalDays === 1 ? " day" : " days")
-    : s.deep ? pct(s.deep / s.spent) + " of the time you logged" : "Mark a task ◆ Deep to see this";
-  return '<div class="kpis">' +
-    tile("Time spent", fmtMin(s.spent), s.days ? "About " + fmtMin(s.avgSpent) + " a day" : "Nothing yet", delta(s.spent, p.spent, fmtMin)) +
-    tile("◆ Deep work", fmtMin(s.deep), deepSub, delta(s.deep, p.deep, fmtMin)) +
-    "</div>";
+// Time 页签顶上一条细条（她挑的，替掉原来两块大卡片）：左边 Build 花了多久、其中多少深度、比上一段；右边全部一共、深度、平均一天。
+// b、bp = 只看 Build 的这一段和上一段；没有 Build 就只有全部那一半（带比上一段）
+function timeStrip(s, p, b, bp, name) {
+  const n = (v, cls = "") => '<b class="num' + (cls ? " " + cls : "") + '">' + fmtMin(v) + "</b>";
+  const all = "All " + n(s.spent) + ' <span class="ss-m">· ◆ ' + fmtMin(s.deep) + (s.days ? " · ~" + fmtMin(s.avgSpent) + " a day" : "") + "</span>";
+  if (!b) return '<div class="st-strip"><span>' + all + "</span>" + delta(s.spent, p.spent, fmtMin) + "</div>";
+  return '<div class="st-strip"><span>' + esc(name) + " " + n(b.spent, "ss-b") + "</span><span>◆ deep " + n(b.deep) + "</span>" + delta(b.spent, bp.spent, fmtMin) +
+    '<span class="ss-all">' + all + "</span></div>";
 }
+
+// 柱子 / 热力图右上角：Build | All
+const viewSeg = (which, name) => '<span class="seg">' + [["build", esc(name)], ["all", "All"]].map(([v, l]) => '<button type="button" data-act="st-view" data-w="' + which + '" data-v="' + v + '"' + (view[which] === v ? ' class="on"' : "") + ">" + l + "</button>").join("") + "</span>";
 
 // Plan 页签：做完多少、守住几天线、估时准不准。只看某个项目时线不显示（线是按全部计划算的）
 function planKpis(s, p, filtered) {
@@ -142,7 +146,7 @@ const dense = (rows) => (rows.length > 40 ? " data-dense" : "");
 
 // Time 页签的柱子：每天记了多久；深度到哪，哪里就有一道潮水线——同一个青柠深一点、水面在晃、往下很快淡掉（像浪花打在岸上那一小段），
 // 柱子还是一根，不另起颜色。两层浪错开着走，每根柱子的起点按位置错开。设了深度目标就画一条虚线
-function timeTrendHTML(s) {
+function timeTrendHTML(s, seg = "") {
   const { byWeek, rows } = trendRows(s);
   const max = niceMax(Math.max(60, ...rows.map((r) => Math.max(r.spent, r.goal || 0))));
   const h = (v) => Math.min(100, (v / max) * 100).toFixed(2) + "%";
@@ -156,7 +160,7 @@ function timeTrendHTML(s) {
     ? "You logged <b>" + fmtMin(s.avgSpent) + "</b> a day on average" + (s.deep ? ", <b>" + fmtMin(s.deep / s.days) + "</b> of it deep." : ".")
     : "This period hasn't started yet.";
   return '<figure class="card chart"><figcaption><div><h3>Time per ' + (byWeek ? "week" : "day") + "</h3><p>" + insight + "</p></div>" +
-    '<div class="legend"><span><i class="k tide"></i>Deep</span><span><i class="k dn"></i>Logged</span>' + (s.goal ? '<span><i class="k dgoal"></i>Deep goal</span>' : "") + "</div></figcaption>" +
+    '<div class="legend">' + seg + '<span><i class="k tide"></i>Deep</span><span><i class="k dn"></i>Logged</span>' + (s.goal ? '<span><i class="k dgoal"></i>Deep goal</span>' : "") + "</div></figcaption>" +
     '<div class="plot">' + [1, 0.5, 0].map((f) => '<i class="grid" style="bottom:' + f * 100 + '%"><span class="num">' + (f ? fmtMin(max * f) : "0") + "</span></i>").join("") +
     '<div class="cols" data-chart="ttrend"' + dense(rows) + ">" + rows.map((r, i) =>
       '<div class="col' + (r.future ? " future" : "") + '" data-i="' + i + '" tabindex="0" aria-label="' + esc(tips.ttrend[i].title + ": " + fmtMin(r.spent) + " logged, " + fmtMin(r.deep) + " deep") + '">' +
@@ -215,33 +219,8 @@ function projectHTML(s) {
     '<div class="crow head"><span></span><span></span><span>Spent</span><span>Done</span><span>Est.</span></div></div></section>';
 }
 
-// ---------- 星期几 ----------
-
-// 每根柱子按项目一段段叠起来（整体最多的在最下面），颜色是项目自己的
+// 每段的颜色是项目自己的
 const paint = (x) => esc(x.color || "var(--c-None)");
-
-function weekdayHTML(s) {
-  const ws = store.prefs().weekStartsOn;
-  const order = ws === "sunday" ? [0, 1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5, 6, 0];
-  const rows = order.map((wd) => s.byWeekday[wd]);
-  const top = Math.max(...rows.map((r) => r.avg));
-  const max = niceMax(Math.max(30, top));
-  const h = (v) => ((v / max) * 100).toFixed(2) + "%";
-  const names = s.byProject.filter((x) => x.spent > 0);
-  tips.weekday = rows.map((r) => ({ title: WEEKDAYS[r.wd] + " · " + r.days + " day" + (r.days === 1 ? "" : "s"),
-    rows: [["average", fmtMin(r.avg), "ln"], ...r.parts.map((x) => [x.name || "No project", fmtMin(x.avg), "sw", x.color || "var(--c-None)"])] }));
-  return '<figure class="card chart small"><figcaption><div><h3>Weekly rhythm</h3><p>Average time on each weekday, by project.</p></div>' +
-    '<div class="legend">' + names.slice(0, 8).map((x) => '<span><i class="k" style="background:' + paint(x) + '"></i>' + esc(x.name || "No project") + "</span>").join("") + "</div></figcaption>" +
-    '<div class="plot short">' + [1, 0.5, 0].map((f) => '<i class="grid" style="bottom:' + f * 100 + '%"><span class="num">' + (f ? fmtMin(max * f) : "0") + "</span></i>").join("") +
-    '<div class="cols wide" data-chart="weekday">' + rows.map((r, i) =>
-      '<div class="col" data-i="' + i + '" tabindex="0" aria-label="' + esc(WEEKDAYS[r.wd] + ": " + fmtMin(r.avg) + " on average" + (r.parts.length ? " — " + r.parts.map((x) => (x.name || "No project") + " " + fmtMin(x.avg)).join(", ") : "")) + '">' +
-      (r.avg ? '<span class="stack" style="height:' + h(r.avg) + '">' + r.parts.map((x) => '<i style="flex-grow:' + x.avg.toFixed(2) + ";background:" + paint(x) + '"></i>').join("") + "</span>" : "") +
-      (top > 0 && r.avg === top ? '<b class="cap-label num" style="bottom:' + h(r.avg) + '">' + fmtMin(r.avg) + "</b>" : "") + "</div>").join("") + "</div></div>" +
-    '<div class="xaxis wide">' + rows.map((r) => "<span>" + WEEKDAYS[r.wd] + "</span>").join("") + "</div>" +
-    '<details class="tview"><summary>Show as table</summary><table><thead><tr><th></th><th>Average</th>' + names.map((x) => "<th>" + esc(x.name || "No project") + "</th>").join("") + "</tr></thead><tbody>" +
-    rows.map((r) => "<tr><td>" + WEEKDAYS[r.wd] + '</td><td class="num">' + fmtMin(r.avg) + "</td>" +
-      names.map((x) => '<td class="num">' + fmtMin(r.parts.find((y) => y.name === x.name)?.avg || 0) + "</td>").join("") + "</tr>").join("") + "</tbody></table></details></figure>";
-}
 
 // ---------- 没做完的原因 ----------
 
@@ -276,8 +255,10 @@ function shade(min, tint) {
 function heatRows(chart, rows) {
   tips[chart] = [];
   const head = '<div class="hrow hhead"><span></span>' + Array.from({ length: 24 }, (_, h) => "<i>" + (h % 3 === 0 ? hourLabel(h).slice(0, 2) : "") + "</i>").join("") + "</div>";
+  // 星期几那一格（只在平均的那张上）：停上去 = 这个星期几平均一天多久、按项目拆开（以前的 Weekly rhythm）
+  const day = (r) => (r.wdI === undefined ? "<span>" + esc(r.label) + "</span>" : '<span class="hday" data-chart="wday" data-i="' + r.wdI + '" tabindex="0">' + esc(r.label) + "</span>");
   return '<div class="heat" data-chart="' + chart + '">' + head + rows.map((r) =>
-    '<div class="hrow"><span>' + esc(r.label) + "</span>" + r.hours.map((min, h) => {
+    '<div class="hrow">' + day(r) + r.hours.map((min, h) => {
       const tint = S.hourTint(r.parts?.[h]);
       const i = tips[chart].push({ title: r.label + " · " + hourLabel(h) + "–" + hourLabel(h + 1), rows: [[r.what, fmtMin(Math.round(min)), "ln"],
         ...(tint ? tint.list.slice(0, 4).map(([n, m]) => [n || "No project", fmtMin(Math.round(m)), "sw", heatColors[n] || "var(--c-None)"]) : []),
@@ -286,15 +267,17 @@ function heatRows(chart, rows) {
     }).join("") + "</div>").join("") + "</div>";
 }
 
-function heatHTML(c, s, by) {
+function heatHTML(c, s, by, seg = "") {
   const ws = store.prefs().weekStartsOn;
   heatGrid = S.hourGrid(c, s.from, s.to, by);
   heatColors = Object.fromEntries(s.byProject.map((x) => [x.name, x.color]));
   const order = ws === "sunday" ? [0, 1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5, 6, 0];
   const byWd = S.heatByWeekday(heatGrid);
   const timed = heatGrid.reduce((a, x) => a + x.hours.reduce((b, v) => b + v, 0), 0);
-  return '<section class="card heatcard"><h3>When you worked</h3><p class="lede">Average minutes timed in each hour, from 6:00. The colour is what that hour mostly went to — a blend when it was shared. Only time with a start and end counts.</p>' +
-    (timed ? heatRows("heat", order.map((wd) => ({ label: WEEKDAYS[wd], hours: byWd[wd].hours, parts: byWd[wd].parts, what: "average" }))) : '<p class="empty">No timed sessions in this period.</p>') +
+  tips.wday = order.map((wd) => { const r = s.byWeekday[wd]; return { title: WEEKDAYS[wd] + " · " + r.days + " day" + (r.days === 1 ? "" : "s"),
+    rows: [["a day on average", fmtMin(r.avg), "ln"], ...r.parts.map((x) => [x.name || "No project", fmtMin(x.avg), "sw", paint(x)])] }; });
+  return '<section class="card heatcard"><header class="heat-head"><h3>When you worked</h3>' + seg + '</header><p class="lede">Average minutes timed in each hour, from 6:00. The colour is what that hour mostly went to — a blend when it was shared. Only time with a start and end counts. Point at a weekday for its daily average.</p>' +
+    (timed ? heatRows("heat", order.map((wd, k) => ({ label: WEEKDAYS[wd], hours: byWd[wd].hours, parts: byWd[wd].parts, what: "average", wdI: k }))) : '<p class="empty">No timed sessions in this period.</p>') +
     (timed ? '<details class="heat-weeks"' + (weeksOpen ? " open" : "") + '><summary>Week by week</summary><div data-heat-weeks>' + (weeksOpen ? weeksHTML() : "") + "</div></details>" : "") + "</section>";
 }
 
@@ -349,44 +332,69 @@ function pieParts(pie) {
   return out;
 }
 
-function pieHTML(c, s, rest) {
-  const logged = pieMode === "logged";
-  const pie = S.clockPie(c, s, { trackedOnly: logged, rest });
-  const parts = pieParts(pie), life = S.lifeOf(c);
+// On the side 里叠在别的事上的那些（sideHaze）：一段流光，从 Untracked 正中往回（往下）漫进前面那几片——多半是边健身、边通勤边看的。
+// 不占时间、不改任何一片；一道亮光从 Untracked 中间往下扫。关了动效 / 系统要求减少动态时不扫，只留那一段
+function hazeHTML(haze, total, mid) {
+  const len = Math.min(99.5, (haze.min / total) * 100);
+  if (len < 0.3) return "";
+  const at = mid - len, glint = Math.min(8, Math.max(0.6, len * 0.3));   // 亮光比那一段短，才扫得动
+  const still = document.getElementById("sky")?.classList.contains("still");
+  const arc = (cls, l, off, style = "") => '<circle class="' + cls + '" r="42" pathLength="100" stroke-dasharray="' + l.toFixed(3) + " " + (100 - l).toFixed(3) + '" stroke-dashoffset="' + (-off).toFixed(3) + '"' + style + "/>";
+  return '<g class="haze" aria-hidden="true">' + arc("haze-band", len, at) +
+    (still ? "" : arc("haze-glint", glint, mid - glint, ' style="--from:' + (-(mid - glint)).toFixed(3) + ";--to:" + (-at).toFixed(3) + ";--dur:" + Math.max(2.2, Math.min(4.5, 1.8 + len / 8)).toFixed(1) + 's"')) + "</g>";
+}
+
+// 睡觉、吃饭（hidden）算在 24 小时里、不画也不列：剩下的各片铺满一圈（角度按 shown 放大），百分比照旧是占整天的多少
+function pieHTML(c, s, rest, haze = null, filtered = false) {
+  const pie = S.clockPie(c, s, { rest, filtered });
+  const parts = pieParts(pie).filter((x) => !x.hidden), life = S.lifeOf(c);
+  const shown = parts.reduce((a, x) => a + x.min, 0);
   const ink = (x) => (x.kind === "project" || x.kind === "none") && Boolean(x.color);   // 用项目颜色的那几片
   const lit = (x) => (neon(x.color) ? esc(neon(x.color)) : "oklch(from " + esc(x.color) + " calc(l + .12) calc(c * 1.9) h)");
   const color = (x) => (x.kind === "life" ? LIFE_COLOR[x.key] : x.kind === "blank" ? "var(--k-blank)" : x.kind === "rest" ? "url(#st-hatch)" : x.kind === "more" ? "var(--k-None)" : esc(neon(x.color) || x.color || "var(--c-None)"));
   const swatch = (x) => (x.kind === "rest" ? HATCH : ink(x) ? lit(x) : color(x));
-  const what = logged ? "of what you logged" : "of the whole period";
-  tips.pie = parts.map((x) => ({ title: x.name, rows: [[what, fmtMin(x.min) + " · " + share(x.min, pie.total), "sw", swatch(x)], ...(x.deep > 0 ? [["deep", fmtMin(x.deep), "tide"]] : [])] }));
+  tips.pie = parts.map((x) => ({ title: x.name, rows: [["of the whole period", fmtMin(x.min) + " · " + share(x.min, pie.total), "sw", swatch(x)], ...(x.unlogged ? [["usual housework", fmtMin(x.unlogged), "pl"]] : []), ...(x.deep > 0 ? [["deep", fmtMin(x.deep), "tide"]] : [])] }));
   // 每片之间留一条缝（周长的 0.5% ≈ 2px）；pathLength = 100，所以长度直接写百分比
-  let at = 0, under = "";
+  let at = 0, under = "", mid = 100;   // mid = Untracked 正中（流光从这里往下扫）；没有 Untracked 就从 12 点
   const arcs = parts.map((x, i) => {
-    const len = (x.min / pie.total) * 100, start = at;
+    const len = (x.min / shown) * 100, start = at;
     at += len;
+    if (x.kind === "blank") mid = start + len / 2;
     const dash = (v) => { const d = Math.max(0.2, v - (parts.length > 1 ? 0.5 : 0)); return d.toFixed(3) + " " + (100 - d).toFixed(3); };
     const where = ' r="42" pathLength="100" stroke-dasharray="' + dash(len) + '" stroke-dashoffset="' + (-start).toFixed(3) + '"';
     if (ink(x)) under += '<circle class="slice-sh"' + where + "/>";
     return '<circle class="slice' + (ink(x) ? " ink" + (neon(x.color) ? "" : " boost") : "") + '" data-i="' + i + '"' + where + ' stroke="' + color(x) + '"' + (ink(x) ? ' style="--c:' + color(x) + '"' : "") + "/>" +
-      (x.deep > 0 ? '<circle class="dring" r="53" pathLength="100" stroke-dasharray="' + dash((x.deep / pie.total) * 100) + '" stroke-dashoffset="' + (-start).toFixed(3) + '"/>' : "");
+      (x.deep > 0 ? '<circle class="dring" r="53" pathLength="100" stroke-dasharray="' + dash((x.deep / shown) * 100) + '" stroke-dashoffset="' + (-start).toFixed(3) + '"/>' : "");
   }).join("");
-  const legend = parts.map((x) => '<li title="' + esc(x.name + (x.deep > 0 ? " · " + fmtMin(x.deep) + " deep" : "")) + '"><i style="background:' + swatch(x) + '"></i><span>' + esc(x.name) +
-    '</span><b class="num">' + fmtMin(x.min) + '</b><em class="num">' + share(x.min, pie.total) + "</em></li>").join("");
-  const lede = logged ? "Only the time you logged." : "24 hours a day, up to today. Sleep, meals &amp; care and weekend housework are your usual amounts.";
+  const hz = haze && haze.min >= 1 && shown > 0 ? haze : null;
+  const hzTitle = "Shows, novels… taken in alongside other things, so it overlaps";
+  const legend = parts.map((x) => '<li title="' + esc(x.name + (x.unlogged ? " · includes " + fmtMin(x.unlogged) + " usual housework" : "") + (x.deep > 0 ? " · " + fmtMin(x.deep) + " deep" : "")) + '"><i style="background:' + swatch(x) + '"></i><span>' + esc(x.name) +
+    '</span><b class="num">' + fmtMin(x.min) + '</b><em class="num">' + share(x.min, pie.total) + "</em></li>").join("") +
+    (hz ? '<li class="haze-li" title="' + esc(hzTitle) + '"><i class="haze-sw"></i><span>On the side</span><b class="num">~' + fmtMin(hz.min) + "</b><em>overlaps</em></li>" : "");
   const field = (k, label, unit, v) => "<label><span>" + label + '</span><input class="num" type="number" min="0" max="24" step="0.5" data-life="' + k + '" data-keep="life-' + k + '" value="' + (v ? Math.round(v / 6) / 10 : "") + '" placeholder="' + (k === "deepGoal" ? "none" : "0") + '"><em>' + unit + "</em></label>";
-  return '<section class="card piecard"><header class="pie-head"><div><h3>Where the time went</h3><p class="lede">' + lede +
-    ' <button type="button" class="link" data-act="life-adjust" aria-expanded="' + adjust + '">' + (adjust ? "Done" : "Adjust") + "</button></p></div>" +
-    '<span class="seg"><button type="button" data-act="pie-mode" data-v="day"' + (logged ? "" : ' class="on"') + '>24h</button><button type="button" data-act="pie-mode" data-v="logged"' + (logged ? ' class="on"' : "") + ">Logged only</button></span></header>" +
+  return '<section class="card piecard"><header class="pie-head"><div><h3>Where the time went</h3><p class="lede">Each 24-hour day. Sleep and meals count but aren\'t drawn.' +
+    ' <button type="button" class="link" data-act="life-adjust" aria-expanded="' + adjust + '">' + (adjust ? "Done" : "Adjust") + "</button></p></div></header>" +
+    // Adjust 一个月才开一次：几个默认值 + On the side 都收在这里面，平常不占地方
     (adjust ? '<div class="life-form">' + field("sleep", "Sleep", "h a day", life.sleep) + field("care", "Meals, dishes, shower", "h a day", life.care) +
-      field("chores", "Housework you don't log", "h a weekend", life.chores) + field("deepGoal", "Deep goal", "h a work day", life.deepGoal) + "</div>" : "") +
+      field("chores", "Chores you don't log", "h a weekend · in Chores", life.chores) + field("deepGoal", "Deep goal", "h a work day", life.deepGoal) + sideRowHTML(c) + "</div>" : "") +
     (pie.total > 0
-      ? '<div class="pie-wrap"><div class="pie" data-chart="pie"><svg viewBox="-60 -60 120 120" role="img" aria-label="' + esc(parts.map((x) => x.name + " " + share(x.min, pie.total)).join(", ")) + '">' +
+      ? '<div class="pie-wrap"><div class="pie" data-chart="pie"><svg viewBox="-60 -60 120 120" role="img" aria-label="' + esc(parts.map((x) => x.name + " " + share(x.min, pie.total) + " of the day").join(", ")) + '">' +
         '<defs><pattern id="st-hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="5" height="5" fill="var(--k-blank)"/><rect width="1.5" height="5" fill="var(--muted)"/></pattern></defs>' +
-        '<g transform="translate(.9 .9) rotate(-90)">' + under + '</g><g transform="rotate(-90)">' + arcs + "</g></svg>" +
+        '<g transform="translate(.9 .9) rotate(-90)">' + under + '</g><g transform="rotate(-90)">' + arcs + (hz ? hazeHTML(hz, shown, mid) : "") + "</g></svg>" +
         '<div class="pie-c"><b class="num">' + fmtMin(pie.tracked) + "</b><span>logged</span>" + (pie.deep > 0 ? '<span class="num" title="Deep work">◆ ' + fmtMin(pie.deep) + "</span>" : "") + "</div></div>" +
         '<ul class="pie-legend">' + legend + "</ul></div>"
       : '<p class="empty">' + (s.days ? "Nothing logged in this period." : "This period hasn't started yet.") + "</p>") +
     "</section>";
+}
+
+// On the side（在 Adjust 里）：一个月填一个总数（小时）。平常能填前两个月，这个月最后三天里这个月也能填；先选着上个月
+function sideRowHTML(c) {
+  const months = S.sideMonths(c.today), last = months[months.length - 2];
+  if (!months.includes(sideMonth)) sideMonth = last;
+  const h = Math.round(store.sideOf(sideMonth) / 6) / 10;
+  return '<div class="ots-row" title="Shows, novels… taken in while doing something else. Drawn as a haze over Untracked">' +
+    '<span>On the side in <select data-ots-m aria-label="Month">' + months.map((m) => '<option value="' + m + '"' + (m === sideMonth ? " selected" : "") + ">" + MONTHS[Number(m.slice(5, 7)) - 1] + "</option>").join("") + "</select></span>" +
+    '<input class="num" type="number" min="0" step="0.5" value="' + (h || "") + '" placeholder="0" data-ots-h data-keep="ots-h-' + sideMonth + '" aria-label="Hours that month"><em>h that month</em></div>';
 }
 
 // ---------- 时间表：项目 × 日子 ----------
@@ -440,8 +448,7 @@ function headHTML(c, r) {
     '<button type="button" class="nav" data-act="st-prev" aria-label="Earlier">' + icon("left") + '</button><button type="button" class="nav" data-act="st-today">Now</button>' +
     '<button type="button" class="nav" data-act="st-next" aria-label="Later"' + (r.to >= c.today ? " disabled" : "") + ">" + icon("right") + "</button></div></header>" +
     '<div class="st-bar"><span class="seg"><button type="button" data-act="st-tab" data-v="time"' + (tab === "time" ? ' class="on"' : "") + '>Time</button><button type="button" data-act="st-tab" data-v="plan"' + (tab === "plan" ? ' class="on"' : "") + ">Plan</button></span>" +
-    filter + '<button type="button" class="dk-deep' + (deepOnly ? " on" : "") + '" data-act="deep-only" aria-pressed="' + deepOnly + '">◆<span>Deep only</span></button>' +
-    '<button type="button" class="btn primary st-add" data-act="add-time">' + icon("plus") + " Add time</button></div>";
+    filter + '<button type="button" class="dk-deep' + (deepOnly ? " on" : "") + '" data-act="deep-only" aria-pressed="' + deepOnly + '">◆<span>Deep only</span></button></div>';
 }
 
 export function statsHTML(c) {
@@ -460,35 +467,18 @@ export function statsHTML(c) {
   } else {
     // 筛选之外记下来的时间：饼图里合成「Everything else」一片
     const rest = sc.on ? Math.max(0, S.summarize(c, r.from, r.to).spent - s.spent) : 0;
-    body = '<div class="st-two">' + timeTrendHTML(s) + pieHTML(sc.c, s, rest) + "</div>" +
-      heatHTML(sc.c, s, sc.by) +
-      '<div class="st-rhythm">' + timeKpis(s, prev) + weekdayHTML(s) + "</div>" +
+    // 流光：只在什么都没勾、没开 Deep only 时画
+    const haze = !deepOnly && !picks.size ? S.sideHaze(c, r.from, r.to) : null;
+    // 只看 Build：在当前筛选之上再筛；勾了别的、里面没有 Build 时就没有这个切换
+    const bName = S.buildGroup(c), bc = bName ? S.onlyGroup(sc.c, bName) : null;
+    const bOn = Boolean(bc) && (!picks.size || bc.tasks.length > 0);
+    const b = bOn ? S.summarize(bc, r.from, r.to, { by: "plan" }) : null, bp = bOn ? S.summarize(bc, p.from, p.to, { by: "plan" }) : null;
+    const tv = bOn && view.trend === "build", hv = bOn && view.heat === "build";
+    body = timeStrip(s, prev, b, bp, bName) + '<div class="st-two">' + timeTrendHTML(tv ? b : s, bOn ? viewSeg("trend", bName) : "") + pieHTML(sc.c, s, rest, haze, sc.on) + "</div>" +
+      heatHTML(hv ? bc : sc.c, hv ? b : s, hv ? "plan" : sc.by, bOn ? viewSeg("heat", bName) : "") +
       sheetHTML(sc.c, s, sc.by);
   }
   return '<div class="stats">' + headHTML(c, r) + body + "</div>";
-}
-
-// ---------- 补一段时间 ----------
-
-function addTimeHTML(c) {
-  const date = c.today;
-  const projects = c.projects.filter(E.isActive);
-  return '<form class="addtime" autocomplete="off"><h2 class="sheet-title">Add time</h2>' +
-    '<label class="field"><span>What</span><input name="title" placeholder="What did you do?" required></label>' +
-    '<label class="field"><span>Project or plan</span><select name="project">' + projectOptions(projects) + "</select></label>" +
-    '<div class="field-row three"><label class="field"><span>Date</span><input type="date" name="date" value="' + date + '" max="' + c.today + '" required></label>' +
-    '<label class="field"><span>Start</span><input type="time" name="from" required></label>' +
-    '<label class="field"><span>Stop</span><input type="time" name="to" value="' + (date === c.today ? store.clockNow() : "") + '" required></label></div>' +
-    '<label class="deep-tog"><input type="checkbox" name="deep"><span>◆ Deep</span></label>' +
-    '<div class="sheet-foot"><span class="hint num" data-at-len></span><button type="submit" class="btn primary">Add</button></div></form>';
-}
-
-// 弹窗里边填边显示这一段有多长
-function paintLen(form) {
-  const m = (v) => { const [h, mm] = String(v).split(":").map(Number); return h * 60 + mm; };
-  const el = form.querySelector("[data-at-len]");
-  const from = form.from.value, to = form.to.value;
-  el.textContent = from && to ? fmtMin((((m(to) - m(from)) % 1440) + 1440) % 1440) + (m(to) < m(from) ? " · past midnight" : "") : "";
 }
 
 // ---------- 交互：切时间段、读数提示 ----------
@@ -552,12 +542,11 @@ export function initStats(rerender) {
     } else if (act === "st-today") {
       anchor = T;
       if (kind === "custom") { const len = diffDays(custom.from, custom.to); custom = { from: addDays(T, -len), to: T }; }
-    } else if (act === "pie-mode") pieMode = el.dataset.v;
-    else if (act === "life-adjust") adjust = !adjust;
+    } else if (act === "life-adjust") adjust = !adjust;
     else if (act === "deep-only") deepOnly = !deepOnly;
     else if (act === "pick-clear") picks.clear();
     else if (act === "sheet-row") { const n = el.dataset.name; if (!sheetOpen.delete(n)) sheetOpen.add(n); }
-    else if (act === "add-time") { openModal(addTimeHTML(store.ctx())); modalSheet()?.querySelector("[name=title]")?.focus(); return; }
+    else if (act === "st-view") view[el.dataset.w] = el.dataset.v === "all" ? "all" : "build";
     if (anchor > T) anchor = T;
     rerender();
   });
@@ -587,20 +576,13 @@ export function initStats(rerender) {
     store.setSetting("life", life);
   });
 
-  on(document, "input", ".addtime [name=from], .addtime [name=to]", (e, el) => paintLen(el.form));
-  on(document, "change", ".addtime [name=project]", (e, el) => { el.form.deep.checked = store.planDeep(el.value); });
-  on(document, "submit", ".addtime", (e, form) => {
-    e.preventDefault();
-    const title = form.title.value.trim();
-    if (!title || !form.from.value || !form.to.value) return;
-    const id = store.addLogged({ date: form.date.value || store.today(), title, ...pickTarget(form.project?.value), deep: form.deep.checked }, form.from.value, form.to.value);
-    if (!id) { form.to.focus(); return; }
-    closeModal();
-  });
-  on(document, "pointerover", ".stats .col, .stats .hc, .stats .slice", (e, col) => showTip(col));
-  on(document, "pointerout", ".stats .col, .stats .hc, .stats .slice", (e, col) => hideTip(col));
-  on(document, "focusin", ".stats .col", (e, col) => showTip(col));
-  on(document, "focusout", ".stats .col", (e, col) => hideTip(col));
+  // On the side：换月份 = 框里换成那个月的数；改小时 = 存（空 / 0 = 拿掉那个月）
+  on(document, "change", ".stats [data-ots-m]", (e, el) => { sideMonth = el.value; rerender(); });
+  on(document, "change", ".stats [data-ots-h]", (e, el) => store.setSide(sideMonth, Math.max(0, Number(el.value) || 0) * 60));
+  on(document, "pointerover", ".stats .col, .stats .hc, .stats .slice, .stats .hday", (e, col) => showTip(col));
+  on(document, "pointerout", ".stats .col, .stats .hc, .stats .slice, .stats .hday", (e, col) => hideTip(col));
+  on(document, "focusin", ".stats .col, .stats .hday", (e, col) => showTip(col));
+  on(document, "focusout", ".stats .col, .stats .hday", (e, col) => hideTip(col));
   document.addEventListener("toggle", (e) => {
     if (!e.target.matches?.(".heat-weeks")) return;
     weeksOpen = e.target.open;

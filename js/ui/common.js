@@ -58,9 +58,13 @@ export function colorOf(t) {
   return projectOf(t)?.color || store.groupByName(t.group)?.color || "var(--c-None)";
 }
 
-// 任务旁边那个小标签：计划的名字，直接挂在大类上的是大类的名字
+// 加任务 / 改任务 / 补时间的下拉里能选的计划：在用的，不含循环小事（那是一条重复，不是能往下挂任务的计划）。keep = 任务现在挂着的那个，留着
+export const pickable = (projects, keep = "") => projects.filter((p) => (E.isActive(p) && !E.isRepeat(p)) || (keep && p.id === keep));
+
+// 任务旁边那个小标签：计划的名字；直接挂在大类上的、还有循环小事的那一次（它直接算在大类上），是大类的名字
 export function badgeOf(t) {
   const p = projectOf(t);
+  if (p && E.isRepeat(p)) return p.group ? { name: p.group, color: store.groupByName(p.group)?.color || p.color || "" } : null;
   return p ? { name: p.name || "", color: p.color || "" } : t.group ? { name: t.group, color: store.groupByName(t.group)?.color || "" } : null;
 }
 
@@ -101,33 +105,31 @@ export function heroHTML(c, d) {
   const { line, shares, done } = lineInfo(c, d);
   const day = E.daySummary(c, d);
   const isToday = d === c.today;
-  const streak = isToday ? E.streak(c) : 0;
   const pct = (v, scale) => Math.min(100, (v / scale) * 100).toFixed(1) + "%";
   if (line < 1) {
     const scale = Math.max(day.cap, day.planned, day.done, 60);
     return '<section class="hero free">' +
-      '<div class="k">' + (isToday ? "Today" : "This day") + "</div>" +
-      '<div class="nums"><span class="big">' + Math.round(day.done) + '</span><span class="of">/ ' + day.planned + ' min</span><span class="state quiet">No project line</span></div>' +
+      '<div class="hero-k">' + (isToday ? "Today" : "This day") + "</div>" +
+      '<div class="nums"><span class="big" data-roll="hero-' + d + '">' + Math.round(day.done) + '</span><span class="of">/ ' + day.planned + ' min</span><span class="state quiet">No project line</span></div>' +
       '<div class="meter"><div class="fill" style="width:' + pct(day.done, scale) + '"></div></div>' +
-      '<div class="meta"><span>' + (streak ? "🔥 " + streak + "-day streak" : "Nothing due from projects") + "</span></div></section>";
+      '<div class="meta"><span>Nothing due from projects</span></div></section>';
   }
   const scale = Math.max(day.cap, line * 1.2, done, 60);
   const held = done >= line - 1;
   const state = held ? (done - line >= 5 ? "+" + fmtMin(done - line) + " ahead" : "Line held ✓") : fmtMin(line - done) + " to go";
   const ahead = isToday ? E.todayAhead(c) : null;
-  const chips = Object.entries(shares).filter(([, v]) => v > 0).map(([pid, min]) => {
-    const p = store.get("projects", pid);
-    if (!p) return "";
+  // 线来自哪几个计划：只有一个的话，大字的「/ 15 min」就是它，小签只写名字；两个以上才各写各的「做了 / 要做」
+  const parts = Object.entries(shares).filter(([, v]) => v > 0).map(([pid, min]) => ({ p: store.get("projects", pid), pid, min })).filter((x) => x.p);
+  const chips = parts.map(({ p, pid, min }) => {
     const doneP = Math.round(E.tasksOn(c, d).filter((t) => t.projectId === pid).reduce((a, t) => a + E.spentMin(t), 0));
-    return '<span class="share' + (doneP >= min - 1 ? " met" : "") + '" style="--pc:' + esc(p.color) + '"><i></i>' + esc(p.name) + " <b>" + doneP + "/" + min + "m</b></span>";
+    return '<span class="share' + (doneP >= min - 1 ? " met" : "") + '" style="--pc:' + esc(p.color) + '"><i></i>' + esc(p.name) + (parts.length > 1 ? " <b>" + doneP + "/" + min + "m</b>" : "") + "</span>";
   }).join("");
   return '<section class="hero' + (held ? " held" : "") + '">' +
-    '<div class="k">' + (isToday ? "Today's line" : d < c.today ? "That day's line" : "Planned line") + "</div>" +
-    '<div class="nums"><span class="big">' + done + '</span><span class="of">/ ' + line + ' min</span><span class="state">' + state + "</span></div>" +
-    '<div class="meter"><div class="fill" style="width:' + pct(done, scale) + '"></div><i class="tick" style="left:' + pct(line, scale) + '"><span>line ' + line + "</span></i></div>" +
+    '<div class="hero-k">' + (isToday ? "Today's line" : d < c.today ? "That day's line" : "Planned line") + "</div>" +
+    '<div class="nums"><span class="big" data-roll="hero-' + d + '">' + done + '</span><span class="of">/ ' + line + ' min</span><span class="state">' + state + "</span></div>" +
+    '<div class="meter"><div class="fill" style="width:' + pct(done, scale) + '"></div><i class="tick" style="left:' + pct(line, scale) + '"></i></div>' +
     (chips ? '<div class="shares">' + chips + "</div>" : "") +
-    '<div class="meta"><span>' + (streak ? "🔥 " + streak + "-day streak" : "") + "</span><span>" +
-    (ahead ? "Ahead " + fmtMin(ahead.extra) + " · " + perDay(ahead.lessPerDay) + " less a day for " + ahead.days + "d" : "") + "</span></div></section>";
+    (ahead ? '<div class="meta"><span></span><span>Ahead ' + fmtMin(ahead.extra) + " · " + perDay(ahead.lessPerDay) + " less a day for " + ahead.days + "d</span></div>" : "") + "</section>";
 }
 
 export function stripHTML(c, d, tasks) {
@@ -151,6 +153,22 @@ export function healthPill(h) {
   return '<span class="health h-' + h.level + '">' + (HEALTH[h.level] || "●") + " " + esc(h.text) + "</span>";
 }
 
+// ---------- emoji 记号（Restock 的标记、Ideas 的类别） ----------
+// tags = [[key, emoji, 名字]]。名字只在 title / aria-label 里，界面上只露 emoji。
+
+// 挑一个：一排 emoji 小块，选着的那个亮；再点一下选着的 = 不要了（由调用的地方决定）
+export function emojiPickHTML(act, tags, cur) {
+  return '<span class="em-pick">' + tags.map(([k, e, name]) => '<button type="button" class="chip' + (cur === k ? " on" : "") + '" data-act="' + act + '" data-v="' + k + '" aria-pressed="' + (cur === k) + '" title="' + esc(name) + '" aria-label="' + esc(name) + '">' + e + "</button>").join("") + "</span>";
+}
+
+// 页面顶上的筛选：All + 有东西的那几个记号（带个数）；cur = 正在看的那个，空 = 全部。一样东西都没有就不画
+export function tagFilterHTML(act, tags, counts, cur) {
+  const total = Object.values(counts).reduce((a, n) => a + n, 0);
+  if (!total) return "";
+  const b = (k, label, n, title) => '<button type="button" class="tagf-b' + (cur === k ? " on" : "") + '" data-act="' + act + '" data-v="' + k + '" aria-pressed="' + (cur === k) + '"' + (title ? ' title="' + esc(title) + '"' : "") + ">" + label + ' <small class="num">' + n + "</small></button>";
+  return '<div class="tagf" role="group" aria-label="Filter">' + b("", "All", total) + tags.filter(([k]) => counts[k] || cur === k).map(([k, e, name]) => b(k, e, counts[k] || 0, name)).join("") + "</div>";
+}
+
 // ---------- 提示条（带撤销） ----------
 
 let toastTimer = 0;
@@ -159,12 +177,18 @@ export function toast(msg, undoFn) {
   if (!box) return;
   box.innerHTML = "<span>" + esc(msg) + "</span>" + (undoFn ? '<button type="button">Undo</button>' : "");
   box.hidden = false;
-  box.classList.remove("show");
+  box.classList.remove("show", "out");
   void box.offsetWidth;
   box.classList.add("show");
   const btn = box.querySelector("button");
   if (btn) btn.onclick = () => { undoFn(); hide(); };
   clearTimeout(toastTimer);
   toastTimer = setTimeout(hide, 6000);
-  function hide() { box.classList.remove("show"); box.hidden = true; }
+  // 走的时候往下沉着淡掉（css 的 #toast.out，0.2 秒）；系统要求减少动态就直接收
+  function hide() {
+    box.classList.remove("show");
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) { box.hidden = true; return; }
+    box.classList.add("out");
+    setTimeout(() => { if (box.classList.contains("out")) { box.classList.remove("out"); box.hidden = true; } }, 200);
+  }
 }

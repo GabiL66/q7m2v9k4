@@ -131,3 +131,80 @@ test("reading: finished things queue apart from wants; an old script and a refus
   assert.deepEqual([R.kindsOf("Book"), R.kindsOf("TV")], [["book", "English"], []]);
   assert.equal(R.finished("Severance").tab, "TV");
 });
+
+// ---------- 白天还是夜里：跟着钟点 ----------
+
+const at = (h, m = 0, day = 13) => new Date(2026, 9, day, h, m, 0, 0);
+
+test("day from six to six, by the device's clock", () => {
+  assert.equal(D.isDaytime(at(5, 59)), false);
+  assert.equal(D.isDaytime(at(6, 0)), true);
+  assert.equal(D.isDaytime(at(17, 59)), true);
+  assert.equal(D.isDaytime(at(18, 0)), false);
+  assert.equal(D.isDaytime(at(0, 0)), false);
+  assert.equal(D.nextTurn(at(3, 20)), at(6).getTime(), "before dawn: this morning's six");
+  assert.equal(D.nextTurn(at(6, 0)), at(18).getTime(), "at six sharp the next turn is the evening one");
+  assert.equal(D.nextTurn(at(17, 59)), at(18).getTime());
+  assert.equal(D.nextTurn(at(18, 0)), at(6, 0, 14).getTime(), "in the evening: tomorrow morning");
+  assert.equal(D.nextTurn(at(23, 30, 31)), new Date(2026, 10, 1, 6).getTime(), "over the end of a month");
+});
+
+test("a tap on the sun or moon holds until the next six o'clock", () => {
+  assert.equal(D.lookAt({}, at(10)), "light");
+  assert.equal(D.lookAt(null, at(22)), "dark");
+  const hold = { themeHold: { v: "dark", until: D.nextTurn(at(10)) } };
+  assert.equal(D.lookAt(hold, at(10)), "dark", "held");
+  assert.equal(D.lookAt(hold, at(17, 59)), "dark");
+  assert.equal(D.lookAt(hold, at(18)), "dark", "the hold ends, and the clock says night anyway");
+  assert.equal(D.lookAt({ themeHold: { v: "light", until: D.nextTurn(at(20)) } }, at(5, 59, 14)), "light", "held through the night");
+  assert.equal(D.lookAt({ themeHold: { v: "light", until: D.nextTurn(at(20)) } }, at(6, 0, 14)), "light", "the hold ends at six; it's day by the clock");
+  assert.equal(D.lookAt({ themeHold: { v: "light", until: D.nextTurn(at(10)) } }, at(19)), "dark", "an expired hold is ignored");
+  assert.equal(D.lookAt({ theme: "dark" }, at(10)), "light", "the old fixed setting no longer counts");
+  assert.equal(D.lookAt({ themeHold: { v: "sepia", until: Infinity } }, at(10)), "light", "nonsense is ignored");
+});
+
+test("the first-paint script in index.html follows the same rule", async () => {
+  const fs = await import("node:fs");
+  const vm = await import("node:vm");
+  const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const src = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(src && src.includes("themeHold"), "the inline script is there");
+  assert.ok(html.indexOf("<script>") < html.indexOf('rel="stylesheet"'), "and it runs before the stylesheet");
+  const run = (local, when, raw) => {
+    const set = {}, meta = {};
+    class FakeDate extends Date { constructor(...a) { super(...(a.length ? a : [when.getTime()])); } }
+    vm.runInNewContext(src, {
+      Date: FakeDate, JSON, Number,
+      localStorage: { getItem: () => (raw !== undefined ? raw : JSON.stringify({ local })) },
+      document: { documentElement: { setAttribute: (k, v) => { set[k] = v; } }, querySelector: () => ({ setAttribute: (k, v) => { meta[k] = v; } }) }
+    });
+    return set["data-theme"] + " " + meta.content;
+  };
+  const colour = { light: "#FFFFFF", dark: "#0C0C13" };
+  const cases = [[{}, at(5, 59)], [{}, at(6)], [{}, at(17, 59)], [{}, at(18)], [{ themeHold: { v: "dark", until: D.nextTurn(at(10)) } }, at(12)],
+    [{ themeHold: { v: "light", until: D.nextTurn(at(10)) } }, at(19)], [{ themeHold: { v: "light", until: D.nextTurn(at(20)) } }, at(23)], [{ theme: "dark" }, at(9)]];
+  for (const [local, when] of cases) { const want = D.lookAt(local, when); assert.equal(run(local, when), want + " " + colour[want], JSON.stringify(local) + " at " + when.getHours() + ":" + when.getMinutes()); }
+  assert.equal(run(null, at(21), "not json"), "dark #0C0C13", "unreadable storage falls back to the clock");
+  assert.equal(run(null, at(9), null), "light #FFFFFF", "nothing saved yet");
+});
+
+test("the 404 page paints day or night with the very same first-paint script", async () => {
+  const fs = await import("node:fs");
+  const first = (f) => fs.readFileSync(new URL("../" + f, import.meta.url), "utf8").match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(first("404.html"), "the 404 page has the script");
+  assert.equal(first("404.html"), first("index.html"));
+});
+
+test("the sky's colour follows the clock: warm mornings, pink evenings, a purple dusk, the deepest dark after midnight, teal before dawn", () => {
+  assert.deepEqual(D.skyAt(false, at(12)), { top: "#E9F3FF", mid: "#FAFCFF", hor: "#EEFFB8", pink: 0.2, blue: 0.15, stars: 0 }, "midday is the usual sky");
+  assert.equal(D.skyAt(false, at(6)).top, "#FFE6D8", "six in the morning: apricot");
+  const half = D.skyAt(false, at(7, 30));
+  assert.ok(half.top !== "#FFE6D8" && half.top !== "#E9F3FF" && /^#[0-9A-F]{6}$/.test(half.top), "between dawn and nine it's in between: " + half.top);
+  assert.equal(D.skyAt(false, at(17, 59)).pink > 0.35, true, "late afternoon is pinker");
+  assert.deepEqual(D.skyAt(true, at(18)), { top: "#121130", mid: "#19103A", hor: "#3A1244", pink: 0, blue: 0, stars: 0.25 }, "dusk: purple, a rose horizon, few stars yet");
+  assert.equal(D.skyAt(true, at(1)).top, "#07070B", "after midnight: as dark as it gets");
+  assert.equal(D.skyAt(true, at(1)).stars, 1);
+  assert.equal(D.skyAt(true, at(5)).hor, "#123040", "five in the morning: the horizon turns teal");
+  assert.equal(D.skyAt(false, at(22)).top, "#E9F3FF", "flipped to day at night: the midday sky");
+  assert.equal(D.skyAt(true, at(10)).top, "#07070B", "flipped to night in the day: the deep night sky");
+});

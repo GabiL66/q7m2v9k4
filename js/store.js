@@ -1,21 +1,25 @@
 // 数据层：本机存一份（localStorage），所有改动都从这里走，记下哪些行还没推到表格。
 // 每行都有 updated（改动时间），两台设备改了同一行，以后改的为准。
-// 数据和读写都在这个文件里；几块各管一摊的（重复、计时、Friends、目标、备餐、灵感池）写在 js/store/ 下面，
+// 数据和读写都在这个文件里；几块各管一摊的（重复、计时、Friends、目标、备餐、灵感池、每天的打分）写在 js/store/ 下面，
 // 最底下把它们接回来——对外还是 store.xxx，名字不变。
 
 import { todayIso, addDays, fmtShort } from "./dates.js";
 import * as E from "./engine.js";
 import * as R from "./routines.js";
 import * as GR from "./groups.js";
+import * as OD from "./offdays.js";
 import * as F from "./friends.js";
 import { readLocal, writeLocal } from "./dom.js";
 import { formatTimes, sumTimes } from "./times.js";
 import seriesStore from "./store/series.js";
 import timerStore from "./store/timer.js";
+import sideStore from "./store/side.js";
 import friendStore from "./store/friends.js";
 import goalStore from "./store/goals.js";
 import mealStore from "./store/meals.js";
 import ideaStore from "./store/ideas.js";
+import scoreStore from "./store/scores.js";
+import quadStore from "./store/quads.js";
 
 const KEY = "kuzhouduan-v1";
 const OLD_KEY = "timebox-v1";
@@ -44,7 +48,7 @@ function blank() {
     cursor: 0,     // 上次从表格拉到的时间点
     schema: SCHEMA,
     needFull: false,   // 下次同步整表重拉（本机刚升级过数据格式）
-    local: { url: "", secret: "", theme: "auto", fx: true, calMode: "week", pool: true, serverVersion: 0 }   // 只存在这台设备上
+    local: { url: "", secret: "", themeHold: null, fx: true, calMode: "week", pool: true, serverVersion: 0 }   // 只存在这台设备上
   };
 }
 
@@ -194,13 +198,15 @@ export function ctx() {
     weekStartsOn: prefs().weekStartsOn,
     commute: setting("commute", null),
     life: setting("life", null),
+    side: sides(),
     groups: groups()
   };
   return ctxCache;
 }
 
+// 按了 Chore 又不到一分钟就停的那天：Chores 那条建了、没记到时间，不列出来（不然条上、日历里多一个小点）
 export function tasksOn(date) {
-  return all("tasks").filter((t) => t.date === date).sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+  return all("tasks").filter((t) => t.date === date && !(E.isChore(t) && !t.times && !(Number(t.actual) > 0))).sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
 }
 
 // ---------- 订阅 ----------
@@ -392,7 +398,7 @@ function itemFor(projectId, title, est) {
 }
 
 export function addTask(fields) {
-  const id = newId();
+  const id = fields.id || newId();   // 给了 id 就用它（Chore 键那条每天固定是 chore-日期）
   const date = fields.date || today();
   change(() => {
     const itemId = fields.projectId && !fields.itemId ? itemFor(fields.projectId, fields.title, fields.est) : fields.itemId || "";
@@ -555,6 +561,14 @@ export function saveProject(p) {
   return id;
 }
 
+// 归档 / 放回来（Projects 页卡片上的 Archive / Restore）：和编辑框里的 Status 是同一个字段（done / active），多一句能撤销的提示
+export function archiveProject(id, on = true) {
+  const p = get("projects", id);
+  if (!p || E.isActive(p) !== on) return;
+  change(() => put("projects", { ...p, status: on ? "done" : "active" }), (on ? "Archived " : "Restored ") + (p.name || "plan"));
+  if (!on && E.isAuto(p)) autoToday(id);   // 放回来的自动排的计划：今天的那份马上排进来（和 saveProject 一样）
+}
+
 // 改计划的「默认深度」：已经有的任务一起改（之后单个任务还能各自改）
 export function setPlanDeep(id, on) {
   const p = get("projects", id);
@@ -634,16 +648,31 @@ export function setSetting(key, value) {
   change(() => put("settings", { id: key, key, value }));
 }
 
-// 通勤日：电脑日历里一天天点。存在 Settings 的 commute（{days: {"2026-10-08": true}}），一年前的顺手清掉
-export const isCommuteDay = (date) => Boolean(setting("commute", null)?.days?.[date]);
+// 电脑日历里一天天点的标记：Settings 里一条 {days: {"2026-10-08": true}}，一年前的顺手清掉；v 是 undefined = 去掉那天
+const dayMarks = (key) => setting(key, null)?.days || {};
 
-export function toggleCommute(date) {
+function markDay(key, date, v, msg) {
   const cut = addDays(today(), -366);
-  const days = Object.fromEntries(Object.entries(setting("commute", null)?.days || {}).filter(([d, v]) => v && d >= cut));
-  if (days[date]) delete days[date];
-  else days[date] = true;
-  change(() => put("settings", { id: "commute", key: "commute", value: { days } }), days[date] ? "Commute day " + fmtShort(date) : "Not a commute day");
+  const days = Object.fromEntries(Object.entries(dayMarks(key)).filter(([d, x]) => typeof x === "boolean" && d >= cut));
+  if (v === undefined) delete days[date];
+  else days[date] = v;
+  change(() => put("settings", { id: key, key, value: { days } }), msg);
 }
+
+// 通勤日
+export const isCommuteDay = (date) => Boolean(dayMarks("commute")[date]);
+export const toggleCommute = (date) => (isCommuteDay(date) ? markDay("commute", date, undefined, "Not a commute day") : markDay("commute", date, true, "Commute day " + fmtShort(date)));
+
+// 不上班（请假、公众假日，js/offdays.js）：点回和自动算的一样时就不留记录
+export const offDay = (date) => OD.offState(date, setting("offday", null));
+export function toggleOffDay(date) {
+  const { off, holiday } = offDay(date);
+  markDay("offday", date, !off === Boolean(holiday) ? undefined : !off, (off ? "Work day " : "Day off ") + fmtShort(date));
+}
+
+// 超级休息日：日历上那天的进度条变金色，别的都不管
+export const isSuperRest = (date) => Boolean(dayMarks("super-rest")[date]);
+export const toggleSuperRest = (date) => (isSuperRest(date) ? markDay("super-rest", date, undefined, "Not a super rest day") : markDay("super-rest", date, true, "Super rest day " + fmtShort(date)));
 
 // 自动排出来的任务（generated：改动时间记成 1，哪台设备真改过它都比这个新）
 function putAuto(x) {
@@ -712,7 +741,7 @@ function putGroups(list) { put("settings", { id: "groups", key: "groups", value:
 // 还没存过（刚更新、还没从表格拉到数据）就先用默认的六个，加上计划里出现过的名字
 export function groups() {
   const saved = setting("groups", null);
-  return Array.isArray(saved) ? saved : GR.withPlans(GR.DEFAULTS, all("projects"));
+  return GR.sortGroups(Array.isArray(saved) ? saved : GR.withPlans(GR.DEFAULTS, all("projects")));
 }
 export const groupByName = (name) => (name ? GR.byName(groups(), name) : null);
 
@@ -802,7 +831,24 @@ const core = { all, get, entries: (t) => Object.entries(S.data[t]), put, drop, c
   groupFor, colorFor, nextPlanOrder, nextOrder, started, dropTask, addTask, updateTask, deleteTask };
 
 const tm = timerStore(core);
-export const { timer, timeOf, hasTime, timeTotal, clockOf, clockNow, startTimer, stopTimer, discardTimer, logTime, addLogged, deleteTime } = tm;
+export const { timer, timeOf, hasTime, timeTotal, clockOf, clockNow, startTimer, stopTimer, setTimerStart, setTimerTag, discardTimer, logTime, addLogged, tagTime, editTime, deleteTime } = tm;
+
+// Chore 键：每天一条 Chores 任务（ID 固定 chore-日期，表格里不用加列就认得出），标着 Done、est = 当天合计；每按一次 = 多一段计时。
+// 挂在叫 Chores 的大类上，没有就第一个 labor 的，再没有就不挂。有别的在跑先停下记好（返回记了多少，和 startTimer 一样）
+export const choreId = (date) => "chore-" + date;
+export const isChore = E.isChore;
+const choreGroup = () => (groups().find((g) => g.name === "Chores") || groups().find((g) => g.labor))?.name || "";
+export function startChore(tag = "") {
+  const id = choreId(today());
+  let logged = null;
+  change(() => {
+    if (!get("tasks", id)) addTask({ id, title: "Chores", est: 0, status: "done", group: choreGroup() });
+    logged = startTimer(id, tag);
+  });
+  return logged;
+}
+
+export const { sides, sideOf, setSide } = sideStore(core);
 
 const fr = friendStore(core);
 export const { friends, meets, meetOfTask, friendFields, lastContact, saveFriend, deleteFriend, saveMeet, deleteMeet, setTaskMeet, importFriends, friendSpecial, adoptMarks, occasionDone, toggleOccasion, doneNext } = fr;
@@ -813,8 +859,12 @@ export const { ideas, ideaOf, ideaOfTask, saveIdea, addIdeas, deleteIdea, pickId
 const { ideaTaskDropped, moveIdea } = idea;
 
 const series = seriesStore({ ...core, timer, setTimer: tm.setTimer, moveMeet, moveIdea });
-export const { routines, routineOf, seriesTasks, addRepeating, repeatTask, replanSeries, editSeries, seriesScope, deleteSeries } = series;
+export const { routines, routineOf, seriesTasks, addRepeating, repeatTask, replanSeries, editSeries, seriesScope, deleteSeries, setSeriesGroup } = series;
 const { setRule } = series;
+
+export const { scores, scoreOf, scoreSetup, scoreCells, setScore, setScoreNote } = scoreStore(core);
+
+export const { quads, quadOf, quadBoard, addQuad, moveQuad, editQuad, doneQuad, deleteQuad, restoreQuad, adoptQuads } = quadStore(core);
 
 export const { goals, saveGoal, deleteGoal } = goalStore(core);
 export const { meals, mealPrefs, saveMeal, deleteMeal, saveWeek, setMealDay, checkDeal, addMealExamples, importMeals, clearMealExamples, addDishes, dishToBox } = mealStore(core);

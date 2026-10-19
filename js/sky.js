@@ -2,32 +2,29 @@
 //   飞机，3–5 分钟一趟：白天是高空的一个小点拖两道长尾迹；夜里是红眼航班——一闪一闪的红灯加一颗小白灯
 //   潮水，6–10 分钟一次：又宽又矮的一片水贴着底边从右下角斜着滑进来、再退回去，一次两道；夜里是荧光海
 //   少见的那样，10–15 分钟一次：白天按季节飘东西（春嫩叶、夏康乃馨、秋枫叶、冬雪花，有风时一两片会打个小旋）；夜里一阵流星雨
-// 一次只放一样：轮到时还有东西没走完，就等它走完再隔一分钟。
+// 各管各的（2026-10-17 她说的「随机性的美」）：每样按自己的节奏来，撞上了就一起出现，不再一次只放一样。
 // 平时只挂一个定时器，没有常驻的动画；东西只动 transform / opacity，放完就拿掉。
+// （彩虹 / 极光不在天上随机出现了，改成点开时间饼图时在它后面浮现，在 js/ui/sun.js 和 css 的 .sun-halo）
 // 不放：页面在后台、系统要求减少动态、设置里关了动效。手机上只有潮水（手机的任务是直接铺在底色上的，天上那几样会搅在字里）。
 
 // ---------- 排班（只算数，test/sky.test.mjs） ----------
 
 export const GAPS = { plane: [180, 300], tide: [360, 600], rare: [600, 900] };   // 两趟之间隔多久（秒）
-export const FIRST = { plane: [20, 60], tide: [60, 180] };                        // 刚打开时第一趟来得早一点：看一两分钟就走的人也见得到
-export const QUIET = 60;
-export const ORDER = ["rare", "tide", "plane"];   // 几样同时到点：少见的先放
+// 刚打开时第一趟来得早一点：看一两分钟就走的人也见得到飞机和潮水；少见的、更少见的照常排
+export const FIRST = { plane: [20, 60], tide: [60, 180], rare: GAPS.rare };
+export const ORDER = ["rare", "tide", "plane"];
 const between = ([a, b], rnd) => (a + (b - a) * rnd()) * 1000;
 
-export const firstDue = (now, rnd = Math.random) => ({ plane: now + between(FIRST.plane, rnd), tide: now + between(FIRST.tide, rnd), rare: now + between(GAPS.rare, rnd) });
+export const firstDue = (now, rnd = Math.random) => Object.fromEntries(ORDER.map((k) => [k, now + between(FIRST[k], rnd)]));
 
-// 现在该不该放、放哪样 → { kind: "plane" | "tide" | "rare" | "", due, wait }
-//   kind 为空 = 现在不放，wait 毫秒后再来看；放了哪样，返回的 due 里那样已经排到下一趟
-//   clearAt = 上一样什么时候走完（没有 = 0）：没走完、或走完还不到一分钟，都先等
+// 现在到点了哪几样 → { kinds, due, wait }：到点的全放（撞在一起就一起出现），各自排到下一趟；wait = 离最近的那一样还有多久
 //   can = 现在能放的那几样（手机上只有潮水）：不在里面的不放、也不动它排的时间
-export function turn(now, due, clearAt, rnd = Math.random, can = ORDER) {
-  const kinds = ORDER.filter((k) => can.includes(k));
-  if (!kinds.length) return { kind: "", due, wait: 60000 };
-  const kind = kinds.find((k) => due[k] <= now);
-  if (!kind) return { kind: "", due, wait: Math.min(...kinds.map((k) => due[k])) - now };
-  const free = clearAt ? clearAt + QUIET * 1000 : 0;
-  if (now < free) return { kind: "", due, wait: free - now };
-  return { kind, due: { ...due, [kind]: now + between(GAPS[kind], rnd) }, wait: 0 };
+export function turn(now, due, rnd = Math.random, can = ORDER) {
+  const live = ORDER.filter((k) => can.includes(k));
+  if (!live.length) return { kinds: [], due, wait: 60000 };
+  const kinds = live.filter((k) => due[k] <= now), next = { ...due };
+  for (const k of kinds) next[k] = now + between(GAPS[k], rnd);
+  return { kinds, due: next, wait: Math.min(...live.map((k) => next[k])) - now };
 }
 
 // 几月飘什么（月份 1–12，用这台设备的当地日期）
@@ -38,11 +35,11 @@ export const seasonOf = (month) => (month >= 3 && month <= 4 ? "spring" : month 
 const reduce = typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
 const R = Math.random;
 const pick = ([a, b]) => a + (b - a) * R();
-let host = null, timer = 0, due = null, clearAt = 0, enabled = true, serial = 0;
+let host = null, timer = 0, due = null, enabled = true, serial = 0;
 
 const night = () => document.documentElement.dataset.theme === "dark";
 const phone = () => document.body.classList.contains("phone");
-const can = () => (phone() ? ["tide"] : ORDER);
+const can = () => (phone() ? ["tide"] : ORDER);   // 手机上只有潮水（任务行直接铺在底图上，别的会搅在字里）
 const allowed = () => enabled && !reduce.matches && document.visibilityState === "visible";
 const nextIn = () => Math.min(...can().map((k) => due[k])) - Date.now();
 
@@ -195,10 +192,11 @@ const SHOWS = {
 //   show("plane") / show("redeye") / show("meteors") / show("fall", "spring" | "summer" | "autumn" | "winter") / show("tide", "day" | "night")
 export function show(kind, how) {
   if (!host || !SHOWS[kind]) return 0;
-  const ms = SHOWS[kind](how);
-  clearAt = Date.now() + ms;
-  return ms;
+  return SHOWS[kind](how);
 }
+
+// 排班里的三样 → 这会儿该放的那一个（白天夜里不一样）
+const SHOW_OF = { plane: () => (night() ? "redeye" : "plane"), tide: () => "tide", rare: () => (night() ? "meteors" : "fall") };
 
 function arm(ms) {
   clearTimeout(timer);
@@ -207,17 +205,16 @@ function arm(ms) {
 
 function tick() {
   if (!allowed()) { if (enabled && document.visibilityState === "visible") arm(60000); return; }   // 系统要求减少动态：一分钟后再看一眼
-  const t = turn(Date.now(), due, clearAt, R, can());
+  const t = turn(Date.now(), due, R, can());
   due = t.due;
-  if (t.kind) show(t.kind === "tide" ? "tide" : t.kind === "plane" ? (night() ? "redeye" : "plane") : night() ? "meteors" : "fall");
-  arm(t.kind ? nextIn() : t.wait);
+  for (const k of t.kinds) show(SHOW_OF[k]());
+  arm(t.wait);
 }
 
 // 正在放的那样直接拿掉（换了白天 / 夜里、关了动效）
 export function clearSky() {
   if (!host) return;
   host.querySelectorAll(".sky-ev").forEach((el) => el.remove());
-  if (clearAt > Date.now()) clearAt = Date.now();
 }
 
 // 设置里的 Sparkles and confetti：关了就不放，正在放的也拿掉

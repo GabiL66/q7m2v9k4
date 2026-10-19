@@ -70,10 +70,12 @@ export function summarize(ctx, from, to, { by = "group" } = {}) {
   const last = to < ctx.today ? to : ctx.today;
   const days = from <= last ? range(from, last) : [];
   const inRange = (d) => d >= from && d <= last;
-  const tasks = ctx.tasks.filter((t) => t.date && inRange(t.date));
+  const all = ctx.tasks.filter((t) => t.date && inRange(t.date));
+  // Chore 键那条（E.isChore）只算分钟：它一直标着 Done，算进做完几条、完成率、估时、原因就不对了
+  const tasks = all.filter((t) => !E.isChore(t));
 
   const spentBy = {}, plannedBy = {}, deepBy = {}, wdBy = {};   // wdBy：每一行（大类 / 计划）在星期几各花了多少
-  for (const t of tasks) {
+  for (const t of all) {
     spentBy[t.date] = (spentBy[t.date] || 0) + E.spentMin(t);
     if (E.spentMin(t)) { const n = rowOf(ctx, t, by).name; (wdBy[n] = wdBy[n] || Array(7).fill(0))[weekday(t.date)] += E.spentMin(t); }
     if (t.deep) deepBy[t.date] = (deepBy[t.date] || 0) + E.spentMin(t);
@@ -99,19 +101,19 @@ export function summarize(ctx, from, to, { by = "group" } = {}) {
 
   // 按大类（或者按计划，见 rowOf）；哪都没挂的放最后
   const nameOf = (t) => rowOf(ctx, t, by).name;
-  const byProject = [...new Set(tasks.map(nameOf))].map((name) => {
-    const ts = tasks.filter((t) => nameOf(t) === name);
+  const byProject = [...new Set(all.map(nameOf))].map((name) => {
+    const mins = all.filter((t) => nameOf(t) === name), ts = mins.filter((t) => !E.isChore(t));
     const tm = ts.filter((t) => t.status === "done" && num(t.actual) > 0 && num(t.est) > 0);
     return {
       name,
-      color: ts.map((t) => rowOf(ctx, t, by).color).find(Boolean) || "",
-      spent: ts.reduce((a, t) => a + E.spentMin(t), 0),
-      deep: ts.reduce((a, t) => a + (t.deep ? E.spentMin(t) : 0), 0),
+      color: mins.map((t) => rowOf(ctx, t, by).color).find(Boolean) || "",
+      spent: mins.reduce((a, t) => a + E.spentMin(t), 0),
+      deep: mins.reduce((a, t) => a + (t.deep ? E.spentMin(t) : 0), 0),
       done: ts.filter((t) => t.status === "done").length,
       counted: ts.filter((t) => !t.optional || t.status === "done").length,
       accuracy: tm.length ? tm.reduce((a, t) => a + num(t.actual), 0) / tm.reduce((a, t) => a + num(t.est), 0) : null
     };
-  }).filter((x) => x.counted || x.spent).sort((a, b) => (!a.name) - (!b.name) || b.spent - a.spent);
+  }).filter((x) => x.counted || x.spent).sort(by === "group" ? GR.byGroupOrder(ctx.groups) : (a, b) => (!a.name) - (!b.name) || b.spent - a.spent);   // 按大类分：永远是大类清单的顺序（Build、Work…）；按计划分：多的在前
 
   // 星期几：平均每天多久；parts = 按行拆开的那几段（顺序和 byProject 一样，最多的在前），加起来就是 avg
   const byWeekday = Array.from({ length: 7 }, (_, wd) => {
@@ -174,27 +176,6 @@ export function projectRows(ctx, from, last) {
   }).filter((r) => r.planned || r.spent);
 }
 
-// ---------- 占比：各大类各占多少，大类里面各计划各占多少（Projects 页用） ----------
-// → { total, groups: [{ name, color, min, parts: [{ name, color, min }] }] }；parts 里名字为空的 = 直接挂在大类上的
-export function shares(ctx, from, to) {
-  const last = to < ctx.today ? to : ctx.today;
-  const groups = new Map();
-  let total = 0;
-  for (const t of ctx.tasks) {
-    if (!t.date || t.date < from || t.date > last) continue;
-    const min = E.spentMin(t);
-    if (!min) continue;
-    const g = rowOf(ctx, t, "group"), p = t.projectId ? E.projectById(ctx, t.projectId) : null;
-    if (!groups.has(g.name)) groups.set(g.name, { name: g.name, color: g.color, min: 0, parts: new Map() });
-    const row = groups.get(g.name), key = p ? p.id : "";
-    if (!row.parts.has(key)) row.parts.set(key, { name: p ? p.name || "" : "", color: (p && p.color) || g.color, min: 0 });
-    row.min += min; total += min;
-    row.parts.get(key).min += min;
-  }
-  const big = (a, b) => b.min - a.min;
-  return { total, groups: [...groups.values()].map((g) => ({ ...g, parts: [...g.parts.values()].sort(big) })).sort((a, b) => (!a.name) - (!b.name) || big(a, b)) };
-}
-
 // ---------- 每周：成长 / Relax 够不够、是不是太多 ----------
 // 大类的 grow = "all"：全部时间算成长；"deep"：标了 ◆ Deep 的算成长（比如深度阅读），没标的算 Relax。
 // 四个门槛（分钟，0 = 不提醒）：成长太少 / 太多、Relax 太少 / 太多。
@@ -250,6 +231,19 @@ export function groupHealth(ctx, g, { weekly = {}, lastContact = "" } = {}) {
   return { kind: track, min, lo, hi, level: lo > 0 && min < lo ? "low" : hi > 0 && min > hi ? "high" : "ok" };
 }
 
+// 这个大类最近 n 天（到今天为止，从旧到新）每天一格：[{ date, state }]。
+//   "done" 那天在这个大类里做了事（标了 Done / Partial，或记了时间）；extra 里的日子也算（Friends 记下的 catch-up）
+//   "open" 那天有安排，还没做（过去的 = 没标；今天的 = 还没轮到）        "" 那天没有
+export function groupDays(ctx, g, n = 14, extra = []) {
+  const from = addDays(ctx.today, -(n - 1)), also = new Set(extra), state = {};
+  for (const t of ctx.tasks) {
+    if (!t.date || t.date < from || t.date > ctx.today || rowOf(ctx, t, "group").name !== g.name) continue;
+    if (t.status === "done" || t.status === "partial" || E.spentMin(t) > 0) state[t.date] = "done";
+    else if (!t.status && !state[t.date]) state[t.date] = "open";
+  }
+  return Array.from({ length: n }, (_, i) => { const date = addDays(from, i); return { date, state: also.has(date) ? "done" : state[date] || "" }; });
+}
+
 // ---------- 季度表的两格 ----------
 // progress = 当天 labor 大类里实际花的分钟 ÷ 6，取整（6 小时 → 60，6.5 小时 → 65）；
 // focus = 当天 ◆ Deep 的分钟四舍五入到整小时，再 ÷ 10（1 小时 → 0.1，1.5 小时 → 0.2）。any = 这天有没有记下东西
@@ -273,24 +267,33 @@ export function quarterRows(ctx, from, days = 14) {
 }
 
 // ---------- 时间去向：一天 24 小时都去哪了 ----------
-// s = summarize 的结果。到今天为止每天 1440 分钟：睡觉 / 吃饭洗澡 / 家务（默认值）、各项目记下来的、没记的空白。
+// s = summarize 的结果。到今天为止每天 1440 分钟：睡觉 / 吃饭洗澡（默认值，hidden：不画也不列，但算在 24 小时里）、各项目记下来的、没记的空白。
+// 默认的周末家务算进 Chores 那一片（不另起一片）；只看某几个项目时（filtered）它跟着 Everything else 走。
 // trackedOnly = 只看记下来的（和 Toggl 的饼图一样）。rest = 筛选之外记下来的时间（只看某个项目时，别的合成一片）。
-export function clockPie(ctx, s, { trackedOnly = false, rest = 0 } = {}) {
+export function clockPie(ctx, s, { trackedOnly = false, rest = 0, filtered = false } = {}) {
   const projects = s.byProject.filter((x) => x.spent > 0).map((x) => ({ key: "p:" + x.name, name: x.name || "No plan", color: x.color, min: x.spent, deep: x.deep, kind: x.name ? "project" : "none" }));
   const picked = projects.reduce((a, x) => a + x.min, 0);
   if (trackedOnly) return { total: picked, tracked: picked, deep: s.deep, blank: 0, parts: projects };
   const life = lifeOf(ctx), sum = { sleep: 0, care: 0, chores: 0 };
   const days = s.days ? range(s.from, s.last) : [];
   for (const d of days) { const l = lifeOn(life, d); for (const k in sum) sum[k] += l[k]; }
+  let extra = Math.max(0, rest);
+  if (sum.chores > 0 && filtered) extra += sum.chores;
+  else if (sum.chores > 0) {
+    const g = (ctx.groups || []).find((x) => x.name === "Chores"), name = g?.name || "Chores";
+    let part = projects.find((x) => x.key === "p:" + name);
+    if (!part) { part = { key: "p:" + name, name, color: g?.color || "", min: 0, deep: 0, kind: "project" }; projects.push(part); projects.sort(GR.byGroupOrder(ctx.groups)); }
+    part.min += sum.chores;
+    part.unlogged = sum.chores;
+  }
   const tracked = picked + Math.max(0, rest);
   const lived = sum.sleep + sum.care + sum.chores;
   const blank = Math.max(0, days.length * 1440 - lived - tracked);
   const parts = [
-    { key: "sleep", name: "Sleep", min: sum.sleep, kind: "life" },
-    { key: "care", name: "Meals & care", min: sum.care, kind: "life" },
-    { key: "chores", name: "Housework", min: sum.chores, kind: "life" },
+    { key: "sleep", name: "Sleep", min: sum.sleep, kind: "life", hidden: true },
+    { key: "care", name: "Meals & care", min: sum.care, kind: "life", hidden: true },
     ...projects,
-    { key: "rest", name: "Everything else", min: Math.max(0, rest), kind: "rest" },
+    { key: "rest", name: "Everything else", min: extra, kind: "rest" },
     { key: "blank", name: "Untracked", min: blank, kind: "blank" }
   ].filter((x) => x.min > 0);
   return { total: lived + tracked + blank, tracked, deep: s.deep, blank, parts };
@@ -337,7 +340,7 @@ export function sheet(ctx, from, to, { weekStartsOn = "monday", by = "group" } =
   const add = (a, v) => a + v, order = (a, b) => (!a.name) - (!b.name) || b.total - a.total;
   return {
     cols, total, deep, sum: total.reduce(add, 0), deepSum: deep.reduce(add, 0),
-    rows: [...rows.values()].map((r) => ({ ...r, subs: [...r.subs.values()].sort(order) })).sort(order)
+    rows: [...rows.values()].map((r) => ({ ...r, subs: [...r.subs.values()].sort(order) })).sort(by === "group" ? GR.byGroupOrder(ctx.groups) : order)
   };
 }
 
@@ -407,4 +410,41 @@ export function heatWeeks(grid, weekStartsOn) {
     weeks.get(w)[(weekday(x.date) - weekday(w) + 7) % 7] = x;
   }
   return [...weeks.entries()].map(([from, days]) => ({ from, days })).sort((a, b) => b.from.localeCompare(a.from));
+}
+
+// ---------- Build 那个大类（Stats 的大字、只看 Build 的柱子和热力图用） ----------
+// 叫 Build 的；没有就第一个看进度的；再没有就是空
+export function buildGroup(ctx) {
+  const list = ctx.groups || [];
+  return (list.find((g) => g.name === "Build") || list.find((g) => GR.trackOf(g) === "progress"))?.name || "";
+}
+// ctx 里只留这个大类的任务
+export const onlyGroup = (ctx, name) => ({ ...ctx, tasks: ctx.tasks.filter((t) => rowOf(ctx, t, "group").name === name) });
+
+// ---------- On the side：边健身、边通勤看的剧 / 小说（一个月一个总数，Stats 页饼图那一块里填） ----------
+// ctx.side = [{ month: "2026-09", min }]。按月平摊到那个月每一天（到今天为止），所以看一周拿到的是那 7 天的份（界面上写 ~）。
+// 它本来就和别的事叠在一起：只在饼图里压一段流光在 Untracked 上，不占时间、不进任何总数。
+const MONTH_RE = /^\d{4}-\d{2}$/;
+
+// 这条摊在哪几天（那个月里、[from, last] 以内）、每天多少分钟
+function spread(x, from, last) {
+  if (!MONTH_RE.test(String(x?.month || "")) || !(num(x.min) > 0)) return { days: [], per: 0 };
+  const first = x.month + "-01", n = daysInMonth(first), end = addDays(first, n - 1);
+  const a = first > from ? first : from, b = end < last ? end : last;
+  return { days: a <= b ? range(a, b) : [], per: num(x.min) / n };
+}
+
+// 在 [from, to]（到今天为止）里摊到多少分钟
+export function sideHaze(ctx, from, to) {
+  const last = to < ctx.today ? to : ctx.today;
+  let min = 0;
+  for (const x of ctx.side || []) { const { days, per } = spread(x, from, last); min += days.length * per; }
+  return { min };
+}
+
+// 能填哪几个月（新的在前）：平常是前两个月；这个月的最后三天里，这个月也能填了
+export function sideMonths(today) {
+  const shift = (n) => addMonths(startOfMonth(today), n).slice(0, 7);
+  const lastDays = Number(today.slice(8)) > daysInMonth(today) - 3;
+  return [...(lastDays ? [shift(0)] : []), shift(-1), shift(-2)];
 }

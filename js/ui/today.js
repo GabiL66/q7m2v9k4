@@ -1,5 +1,5 @@
-// 「今天」页：安全线、当天的任务块、昨天的账单、过期没做的、任务列表、加任务、给这天的备注。
-// 电脑上左边是清单，右边是安全线和账单；日历里点开某一天也用它。
+// 「今天」页：安全线、当天的任务块、昨天的账单、过期没做的、任务列表、加任务、这一天自己打的分。
+// 电脑上左边是清单，右边是安全线、账单和打分；日历里点日期就是到这一页的那一天。
 // 手机上：看今天前后各 5 天的任务、给任务标结果、计时、加任务；右上角齿轮进去只有白天黑夜和连表格。计划都在电脑上做。
 
 import * as store from "../store.js";
@@ -15,13 +15,16 @@ import * as reading from "../reading.js";
 import * as Meal from "../meals.js";
 import { parseLogLine } from "../times.js";
 import * as R from "../routines.js";
-import { heroHTML, stripHTML, billHTML, colorOf, badgeOf, projectOptions, pickTarget, segStyle, lineInfo, toast, STATUS, ballHTML } from "./common.js";
+import { heroHTML, stripHTML, billHTML, colorOf, badgeOf, projectOptions, pickable, pickTarget, segStyle, lineInfo, toast, STATUS, ballHTML } from "./common.js";
 import { openTaskEditor } from "./editor.js";
 import { pickedId, pick, timeable, elapsed } from "./timer.js";
 import { animateNext } from "../motion.js";
 import { cheer } from "../fx.js";
 import { shopCount } from "./meals.js";
 import { withHTML, taskMeetHTML, withText, takeWith } from "./friends.js";
+import { choreHTML } from "./chores.js";
+import { scoreHTML } from "./scores.js";
+import { quadHTML } from "./quads.js";
 
 const openDesc = new Set();
 const logOpen = new Set();   // 已经有计时记录、又点了「+ time」要再补一段的任务
@@ -31,21 +34,32 @@ let viewDate = "";
 let focus = "";   // 点开的那一行（四个状态按钮只在这一行）
 const addTarget = {};   // 加任务框里选的是哪个项目 / 计划（日期 → 下拉的值）：能选「和谁」的大类要多画一块
 const ideaDraft = {};   // 加任务框里从灵感池挑中的那条（日期 → 灵感 id）：任务建好后挂上去，池子里就划掉了
+let addOpen = "";       // 哪一天的加任务框展开着（下面那排选项）。自己记着，不靠焦点猜——见 initToday 里的 setAddOpen
+let timeEdit = "";      // 正在改头尾的那一段（「任务 id#第几段」）
 // 这个任务能不能选「和谁」：已经带着一条记录，或者它那个大类开了这一项
 const meetable = (t) => Boolean(store.meetOfTask(t.id) || store.groupByName(store.groupOf(t))?.friends);
 
 export const shownDate = () => viewDate || store.today();
 export function showDate(d) { viewDate = d === store.today() ? "" : d; }
 
-// 计时记录：「09:10–09:40 · 30m ×」；正在计时的那个显示走着的时间
+// 计时记录：「09:10–09:40 · 30m ×」；正在计时的那个显示走着的时间。点钟点那段 = 改头尾（忘了按 / 停晚了的补救）
+export function timeEditHTML(x) {
+  const k = (f) => 'name="' + f + '" value="' + esc(x[f]) + '" data-keep="tm-' + f + "-" + esc(x.id) + '"';
+  return '<form class="tm-edit" data-tid="' + esc(x.id) + '" autocomplete="off"><input type="time" ' + k("from") + ' aria-label="From"><span>–</span><input type="time" ' + k("to") + ' aria-label="To">' +
+    '<button type="submit" class="btn">Save</button><button type="button" class="link" data-act="time-edit-x">Cancel</button></form>';
+}
+export function timeEditing() { return timeEdit; }
+export function timeRangeHTML(x) {
+  return x.from ? '<button type="button" class="tm-at num" data-act="time-edit" data-tid="' + x.id + '" title="Change the times">' + esc(x.from) + "–" + esc(x.to) + "</button> · " : "";
+}
 function timesHTML(c, t, list, form) {
   const run = store.timer();
   const live = run?.taskId === t.id;
   const fin = t.status === "done" || t.status === "partial";
   if (!list.length && !live) return "";
   return '<div class="times">' + (live ? '<span class="tm live"><i></i><b class="num" data-since="' + run.start + '">' + elapsed(run.start) + "</b></span>" : "") +
-    list.map((x) => '<span class="tm">' + (x.from ? '<span class="num">' + esc(x.from) + "–" + esc(x.to) + "</span> · " : "") + fmtMin(x.min) +
-      '<button type="button" class="tm-x" data-act="time-del" data-tid="' + x.id + '" aria-label="Delete this time">×</button></span>').join("") +
+    list.map((x) => (timeEdit === x.id && x.from ? timeEditHTML(x) : '<span class="tm">' + timeRangeHTML(x) + fmtMin(x.min) +
+      '<button type="button" class="tm-x" data-act="time-del" data-tid="' + x.id + '" aria-label="Delete this time">×</button></span>')).join("") +
     (list.length > 1 ? '<span class="tm sum">= ' + fmtMin(store.timeTotal(t.id)) + "</span>" : "") +
     (fin && !form ? '<button type="button" class="tm more-time" data-act="time-more">+ time</button>' : "") + "</div>";
 }
@@ -199,9 +213,9 @@ function pickHTML(d, query) {
   if (!g) return "";
   const ideas = I.match(store.ideas(), taskOf, store.today(), query);
   const wants = GR.trackOf(g) === "contact" || !store.setting("reading")?.url ? [] : (reading.titleKey(query) ? reading.search(query, 20).filter((r) => r.want) : reading.wants()).slice(0, 4);
-  const item = (act, id, text, small, on) => '<li><button type="button" data-act="' + act + '" data-id="' + esc(id) + '" data-t="' + esc(text) + '"' + (on ? ' class="on"' : "") + ">" +
-    esc(text) + (small ? "<small>" + esc(small) + "</small>" : "") + "</button></li>";
-  return (ideas.length ? "<p>Ideas</p><ul>" + ideas.map((i) => item("idea-pick", i.id, i.text, i.date && i.date < store.today() ? "was " + fmtShort(i.date) : I.whenText(i), ideaDraft[d] === i.id && I.sameText(i.text, query))).join("") + "</ul>" : "") +
+  const item = (act, id, text, small, on, em = "") => '<li><button type="button" data-act="' + act + '" data-id="' + esc(id) + '" data-t="' + esc(text) + '"' + (on ? ' class="on"' : "") + ">" +
+    (em ? em + " " : "") + esc(text) + (small ? "<small>" + esc(small) + "</small>" : "") + "</button></li>";
+  return (ideas.length ? "<p>Ideas</p><ul>" + ideas.map((i) => item("idea-pick", i.id, i.text, i.date && i.date < store.today() ? "was " + fmtShort(i.date) : I.whenText(i), ideaDraft[d] === i.id && I.sameText(i.text, query), I.emojiOf(i))).join("") + "</ul>" : "") +
     (wants.length ? "<p>Want</p><ul>" + wants.map((r) => item("want-pick", "", r.title, r.tab, false)).join("") + "</ul>" : "");
 }
 
@@ -209,10 +223,10 @@ function pickHTML(d, query) {
 // 名字后面带一段钟点（Reading 14:00-15:10）= 已经做完的，直接记成一条 Done。
 // 手机上多一个 Idea 开关：打开后 Add = 记进灵感池（不建任务），回电脑再归类、挑日子
 function addHTML(c, d, phone = false) {
-  const projects = c.projects.filter(E.isActive);
+  const projects = pickable(c.projects);
   const target = addTarget[d] || "";
   const people = store.groupByName(store.groupOf(pickTarget(target)))?.friends;
-  return '<form class="add" data-add="' + d + '" autocomplete="off">' +
+  return '<form class="add' + (addOpen === d ? " open" : "") + '" data-add="' + d + '" autocomplete="off">' +
     '<div class="add-main"><input name="title" data-keep="add-title-' + d + '" placeholder="' + (phone || d > c.today ? "Add a task" : "Add a task, or log one: Reading 14:00-15:10") + '" enterkeyhint="done">' +
     '<input name="est" class="min num" data-keep="add-est-' + d + '" type="number" inputmode="numeric" value="30" min="5" step="5" aria-label="Minutes">' +
     '<button class="btn cta" type="submit">Add</button></div>' +
@@ -226,24 +240,19 @@ function addHTML(c, d, phone = false) {
 }
 
 export function dayParts(c, d) {
-  const tasks = store.tasksOn(d);
+  const all = store.tasksOn(d), tasks = all.filter((t) => !store.isChore(t));   // Chore 键那条不进列表，画在列表顶上那一行（js/ui/chores.js）
   const isToday = d === c.today;
   const openId = openOf(c, d, tasks);
   return {
     hero: heroHTML(c, d),
-    strip: stripHTML(c, d, tasks),
+    strip: stripHTML(c, d, all),
     bill: isToday ? billHTML(E.yesterdayBill(c)) : "",
     notices: isToday ? noticesHTML(c) : "",
     overdue: isToday ? overdueHTML(c) : "",
-    list: '<div class="list" data-list="' + d + '">' + (tasks.length ? tasks.map((t) => rowHTML(c, t, tasks, false, openId)).join("") : E.ghostsOn(c, d).length ? "" : '<div class="empty">No tasks for this day.</div>') + ghostsHTML(c, d) + "</div>",
-    add: addHTML(c, d)
+    list: choreHTML(c, d) + '<div class="list" data-list="' + d + '">' + (tasks.length ? tasks.map((t) => rowHTML(c, t, tasks, false, openId)).join("") : E.ghostsOn(c, d).length ? "" : '<div class="empty">No tasks for this day.</div>') + ghostsHTML(c, d) + "</div>",
+    add: addHTML(c, d),
+    score: scoreHTML(c, d)   // 开始日到今天才有（js/ui/scores.js）
   };
-}
-
-// 日历里点开某一天：同一套，竖着排
-export function dayModalHTML(c, d) {
-  const x = dayParts(c, d);
-  return '<div class="dayview" data-date="' + d + '"><h2 class="sheet-title">' + fmtDay(d) + (d === c.today ? " <small>Today</small>" : "") + "</h2>" + x.hero + x.strip + x.list + x.add + "</div>";
 }
 
 // ---------- 手机 ----------
@@ -268,7 +277,7 @@ function connectHTML() {
 function phoneHTML(c) {
   let d = shownDate();
   if (Math.abs(diffDays(c.today, d)) > PHONE_SPAN) { showDate(c.today); d = c.today; }
-  const tasks = store.tasksOn(d);
+  const all = store.tasksOn(d), tasks = all.filter((t) => !store.isChore(t));
   const openId = openOf(c, d, tasks);
   const days = Array.from({ length: PHONE_SPAN * 2 + 1 }, (_, i) => addDays(c.today, i - PHONE_SPAN));
   const strip = '<nav class="daystrip" aria-label="Days">' + days.map((x) =>
@@ -278,12 +287,12 @@ function phoneHTML(c) {
   const { line, done } = lineInfo(c, d);
   const lineText = line > 0 ? (done >= line - 1 ? "Line " + fmtMin(line) + " ✓" : "Line " + fmtMin(line) + " · " + fmtMin(line - done) + " to go") : "";
   const meta = '<div class="stripmeta' + (day.cap > 0 && day.planned > day.cap ? " over" : "") + '"><span>' + Math.round(day.done) + " / " + day.planned + " min done</span><span>" + lineText + "</span></div>";
-  const bar = '<div class="strip">' + tasks.map((t) => '<i style="flex-grow:' + Math.max(5, Number(t.est) || 0) + ";" + segStyle(t) + '"></i>').join("") + "</div>";
+  const bar = '<div class="strip">' + all.map((t) => '<i style="flex-grow:' + Math.max(5, Number(t.est) || 0) + ";" + segStyle(t) + '"></i>').join("") + "</div>";
   const toBuy = shopCount(c);   // 下次采购还剩几样（顶栏的 🛒）
   return '<div class="dayview phone-day" data-date="' + d + '">' +
     '<header class="phead"><div class="l"><h1 data-act="day-today">' + fmtDay(d) + "</h1>" + ballHTML() + "</div>" +
     '<div class="r"><button type="button" class="psync" data-sync-status aria-label="Sync"></button><a class="pread pshop" href="#shop" aria-label="Next shop">' + icon("cart") + (toBuy ? "<span>" + toBuy + "</span>" : "") + '</a><a class="pread pico" href="#ideas" aria-label="Ideas">' + icon("idea") + '</a><a class="pread pico" href="#reading" aria-label="Reading">' + icon("reading") + "</a>" + '<a class="icon-btn pset" href="#settings" aria-label="Settings">' + icon("settings") + "</a></div></header>" + strip +
-    (store.local().url ? bar + meta + '<div class="list" data-list="' + d + '">' +
+    (store.local().url ? bar + meta + choreHTML(c, d) + '<div class="list" data-list="' + d + '">' +
       (tasks.length ? tasks.map((t) => rowHTML(c, t, tasks, true, openId)).join("") : E.ghostsOn(c, d).length ? "" : '<div class="empty">' + (d < c.today ? "Nothing was planned this day." : "Nothing planned yet.") + "</div>") + ghostsHTML(c, d) + "</div>" + addHTML(c, d, true)
       : connectHTML()) + "</div>";
 }
@@ -296,8 +305,8 @@ export function todayHTML(c, phone) {
   return '<div class="dayview" data-date="' + d + '">' +
     '<header class="page-head"><div><h2>' + fmtDay(d) + " <small>" + (isToday ? "Today" : d < store.today() ? "Looking back" : "Looking ahead") + "</small></h2></div>" +
     '<div class="tools"><button type="button" class="nav" data-act="day-prev" aria-label="Previous day">' + icon("left") + '</button><button type="button" class="nav" data-act="day-today">Today</button><button type="button" class="nav" data-act="day-next" aria-label="Next day">' + icon("right") + "</button></div></header>" +
-    '<div class="today-grid"><div class="today-main">' + x.strip + x.list + x.add + "</div>" +
-    '<div class="today-side">' + x.hero + x.bill + x.notices + x.overdue + "</div></div></div>";
+    '<div class="today-grid"><div class="today-col"><div class="today-main">' + x.strip + x.list + x.add + "</div>" + (isToday ? quadHTML() : "") + "</div>" +
+    '<div class="today-side">' + x.hero + x.bill + x.notices + x.overdue + "</div>" + x.score + "</div></div>";
 }
 
 // ---------- 交互（挂在 document 上，今天页和弹出的某一天都能用） ----------
@@ -325,6 +334,8 @@ export function initToday(rerender) {
       store.setStatus(id, el.dataset.s);
     } else if (act === "edit") openTaskEditor(id);
     else if (act === "time-del") store.deleteTime(el.dataset.tid);
+    else if (act === "time-edit") { timeEdit = el.dataset.tid; rerender(); requestAnimationFrame(() => setTimeout(() => document.querySelector(".tm-edit [name=from]")?.focus(), 0)); }
+    else if (act === "time-edit-x") { timeEdit = ""; rerender(); }
     else if (act === "time-more") { logOpen.add(id); rerender(); }
     else if (act === "time-log") logFromRow(el.closest(".row"));
     else if (act === "tomorrow") store.toTomorrow(id);
@@ -371,6 +382,23 @@ export function initToday(rerender) {
     rerender();
   });
 
+  // 加任务框下面那排选项的收放：焦点进了表单就展开；点到 / 焦点走到表单和下拉（.menu，挂在 body 上）之外，或在表单里按 Esc，才收。
+  // 以前是看「表单里有没有焦点」，整页重画一丢焦点就猜错（刚选完 Project 就收起来）；现在重画时照 addOpen 画，焦点也还得回去
+  const setAddOpen = (d) => {
+    if (addOpen === d) return;
+    addOpen = d;
+    document.querySelectorAll("form.add[data-add]").forEach((f) => f.classList.toggle("open", f.dataset.add === d));
+  };
+  const addTouched = (e) => {
+    const form = e.target.closest?.("form.add[data-add]");
+    if (form) setAddOpen(form.dataset.add);
+    else if (addOpen && !e.target.closest?.(".menu")) setAddOpen("");
+  };
+  document.addEventListener("focusin", addTouched);
+  document.addEventListener("pointerdown", addTouched, true);
+  // 下拉开着的时候 Esc 先被它收走（js/ui/select.js，不往下传），到这里的都是表单自己的
+  on(document, "keydown", "form.add[data-add]", (e) => { if (e.key === "Escape" && addOpen) { document.activeElement?.blur?.(); setAddOpen(""); } });
+
   // 加任务时选了计划：Deep 跟着这个计划的默认；选的大类能选「和谁」就多画那一块
   on(document, "change", ".dayview form[data-add] select[name=project]", (e, el) => {
     const box = el.form.querySelector("[name=deep]");
@@ -380,6 +408,13 @@ export function initToday(rerender) {
   });
 
   // 记这一顿吃了什么：回车 / Add = 加一道，接着还能加
+  // 改一段的头尾：两个钟点都填了、中间至少一分钟才收
+  on(document, "submit", ".tm-edit", (e, form) => {
+    e.preventDefault();
+    const tid = form.dataset.tid;
+    timeEdit = "";
+    if (!store.editTime(tid, form.from.value, form.to.value)) { timeEdit = tid; toast("Check the two times"); }
+  });
   on(document, "submit", ".dish-quick", (e, form) => {
     e.preventDefault();
     const t = store.get("tasks", form.dataset.task);

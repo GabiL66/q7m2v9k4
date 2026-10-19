@@ -106,7 +106,7 @@ test("deep work: totals, per day, per project, and the daily goal on work days o
   assert.equal(none.goalDays, 0);
 });
 
-test("where the time went: 24 hours a day, usual life first, then what was tracked, then the blank", () => {
+test("where the time went: 24 hours a day; sleep and meals are counted but hidden, weekend housework goes into Chores", () => {
   const c = deepCtx();
   assert.deepEqual(S.lifeOn(S.lifeOf(c), "2026-10-03"), { sleep: 420, care: 180, chores: 60 }, "Saturday gets half the weekend chores");
   assert.equal(S.lifeOn(S.lifeOf(c), "2026-10-05").chores, 0);
@@ -116,20 +116,23 @@ test("where the time went: 24 hours a day, usual life first, then what was track
   const part = (k) => pie.parts.find((x) => x.key === k)?.min;
   assert.equal(part("sleep"), 5 * 420);
   assert.equal(part("care"), 5 * 180);
-  assert.equal(part("chores"), 120);
+  assert.ok(pie.parts.filter((x) => x.kind === "life").every((x) => x.hidden), "sleep and meals: counted, not drawn");
+  assert.equal(part("chores"), undefined, "no Housework slice of its own");
+  const logged = S.clockPie(c, s, { trackedOnly: true }).parts.find((x) => x.key === "p:Chores").min;
+  assert.equal(part("p:Chores"), logged + 120, "the usual weekend housework sits in Chores");
   assert.equal(part("p:IELTS"), 135);
   assert.equal(part("p:"), 40);
   assert.equal(pie.tracked, 195);
   assert.equal(part("blank"), 5 * 1440 - 5 * 600 - 120 - 195);
   assert.equal(pie.parts.reduce((a, x) => a + x.min, 0), pie.total);
-  assert.deepEqual(pie.parts.map((x) => x.key), ["sleep", "care", "chores", "p:IELTS", "p:Chores", "p:", "blank"]);
+  assert.deepEqual(pie.parts.map((x) => x.key), ["sleep", "care", "p:Chores", "p:IELTS", "p:", "blank"], "projects in the fixed order, not by size");
   const only = S.clockPie(c, s, { trackedOnly: true });
   assert.equal(only.total, 195);
   assert.ok(only.parts.every((x) => x.kind === "project" || x.kind === "none"));
   // 只看 IELTS：别的记录合成一片；默认值调得再大，空白也不会是负的
   const ielts = { ...c, tasks: c.tasks.filter((t) => t.projectId === "r" || t.projectId === "l") };
-  const f = S.clockPie(ielts, S.summarize(ielts, "2026-10-01", "2026-10-07", { by: "plan" }), { rest: 60 });
-  assert.equal(f.parts.find((x) => x.key === "rest").min, 60);
+  const f = S.clockPie(ielts, S.summarize(ielts, "2026-10-01", "2026-10-07", { by: "plan" }), { rest: 60, filtered: true });
+  assert.equal(f.parts.find((x) => x.key === "rest").min, 60 + 120, "filtered: the housework goes with everything else");
   assert.equal(f.tracked, 195);
   const busy = { ...c, life: { sleep: 1000, care: 440 } };
   assert.equal(S.clockPie(busy, S.summarize(busy, "2026-10-05", "2026-10-05")).blank, 0);
@@ -187,9 +190,6 @@ test("a task can sit right on a project, with or without a plan", () => {
   assert.deepEqual(rows("plan"), { Deck: 60, Work: 30, Chores: 20, "Solo plan": 15, "": 10 }, "by plan, a task without a plan stays on its project's row");
   assert.deepEqual(rows((t) => ({ name: t.id < "c" ? "first" : "rest", color: "" })), { first: 90, rest: 45 }, "rows can be decided by a function");
   assert.equal(S.rowOf(c, c.tasks[2], "group").color, "#840", "the project's colour when there's no plan");
-  const sh = S.shares(c, "2026-10-05", "2026-10-11");
-  assert.equal(sh.total, 135);
-  assert.deepEqual(sh.groups.map((g) => [g.name, g.min, g.parts.map((x) => x.name + ":" + x.min).join(",")]), [["Work", 90, "Deck:60,:30"], ["Chores", 20, ":20"], ["Solo plan", 15, "Solo plan:15"], ["", 10, ":10"]]);
 });
 
 test("weekly check: growth and relax, too little or too much", () => {
@@ -217,4 +217,66 @@ test("quarter sheet: progress is labour hours x 10, focus is deep hours / 10", (
   assert.deepEqual(S.quarterRows(c, "2026-10-09"), [{ date: "2026-10-09", progress: 0, focus: 0 }, { date: "2026-10-10", progress: 65, focus: 0.3 }, { date: "2026-10-11", progress: 14, focus: 0 }],
     "from the start day; a past day with nothing is 0; today waits until something is logged");
   assert.equal(S.quarterRows(c, "2026-01-01").length, 13, "at most the last two weeks");
+});
+
+test("a project's last 14 days: done, planned but not done, nothing", () => {
+  const fit = GROUPS[1];
+  const c = gctx([
+    done("a", "2026-10-12", 40, { projectId: "gym" }), { id: "b", date: "2026-10-11", est: 30, status: "", group: "Fitness" },
+    { id: "c", date: "2026-10-10", est: 30, status: "later", group: "Fitness" }, { id: "d", date: "2026-10-09", est: 30, status: "partial", actual: 10, group: "Fitness" },
+    { id: "e", date: "2026-10-08", est: 30, status: "", actual: 12, projectId: "gym" }, { id: "f", date: "2026-10-07", est: 30, status: "", group: "Fitness" },
+    done("g", "2026-10-07", 20, { group: "Fitness" }), done("h", "2026-10-06", 60, { group: "Work" }),
+    done("i", "2026-09-29", 30, { group: "Fitness" }), done("j", "2026-09-28", 30, { group: "Fitness" })
+  ]);
+  const days = S.groupDays(c, fit);
+  assert.equal(days.length, 14);
+  assert.equal(days[0].date, "2026-09-29", "oldest first, today last");
+  assert.equal(days[13].date, "2026-10-12");
+  const at = (d) => days.find((x) => x.date === d).state;
+  assert.equal(at("2026-10-12"), "done");
+  assert.equal(at("2026-10-11"), "open", "planned, not marked");
+  assert.equal(at("2026-10-10"), "", "moved to later: nothing that day");
+  assert.equal(at("2026-10-09"), "done", "partial counts");
+  assert.equal(at("2026-10-08"), "done", "time logged counts even before it is marked");
+  assert.equal(at("2026-10-07"), "done", "one done task is enough, whatever else was planned");
+  assert.equal(at("2026-10-06"), "", "another project's day");
+  assert.equal(at("2026-09-29"), "done", "the 14th day back is in");
+  assert.equal(S.groupDays(c, fit, 7).length, 7);
+  assert.equal(S.groupDays(c, GROUPS[3], 14, ["2026-10-03", "2026-01-01"]).filter((x) => x.state === "done").map((x) => x.date).join(), "2026-10-03", "extra dates inside the window count");
+});
+
+test("on the side: one total a month, spread over its days, only ever a haze", () => {
+  const side = [{ month: "2026-09", min: 1800 }, { month: "2026-10", min: 310 }, { month: "bad", min: 99 }];
+  const c = ctx({ side });
+  assert.equal(S.sideHaze(c, "2026-09-01", "2026-09-30").min, 1800);
+  assert.equal(Math.round(S.sideHaze(c, "2026-09-28", "2026-10-04").min), 3 * 60 + 4 * 10, "a week gets its days' share");
+  assert.equal(S.sideHaze(c, "2026-10-01", "2026-10-31").min, 50, "this month only up to today");
+  const s = S.summarize(c, "2026-09-01", "2026-09-30");
+  assert.equal(s.spent, 0, "it never adds to the time spent");
+  assert.deepEqual(S.sideMonths("2026-10-14"), ["2026-09", "2026-08"], "usually the two months before");
+  assert.deepEqual(S.sideMonths("2026-10-29"), ["2026-10", "2026-09", "2026-08"], "in the last three days, this month too");
+  assert.deepEqual(S.sideMonths("2026-10-28"), ["2026-09", "2026-08"]);
+  assert.deepEqual(S.sideMonths("2026-02-27"), ["2026-02", "2026-01", "2025-12"], "February's last three days; and across the year");
+});
+
+test("on the side in the store: one row a month; older rows of that month are folded in and replaced", async () => {
+  const store = await import("../js/store.js?side");
+  store.setSetting("side:old1", { month: "2026-09", min: 600, kind: "show", full: true });   // 上一版的写法
+  store.setSetting("side:old2", { month: "2026-09", min: 120 });
+  assert.equal(store.sideOf("2026-09"), 720, "the same month adds up");
+  store.setSide("2026-09", 900);
+  assert.deepEqual(store.sides(), [{ month: "2026-09", min: 900 }]);
+  assert.ok(!store.get("settings", "side:old1"), "the old row is gone");
+  store.setSide("2026-09", 0);
+  assert.deepEqual(store.sides(), []);
+});
+
+test("the Chores task from the chore key counts its minutes, not as a done task", () => {
+  const c = ctx({ tasks: [
+    { id: "a", date: "2026-10-02", est: 30, status: "done", actual: 30 },
+    { id: "chore-2026-10-02", date: "2026-10-02", est: 45, status: "done", actual: 45, group: "Chores" }
+  ] });
+  const s = S.summarize(c, "2026-10-01", "2026-10-07");
+  assert.deepEqual([s.spent, s.done, s.counted], [75, 1, 1]);
+  assert.equal(s.byProject.find((x) => x.name === "Chores").done, 0);
 });

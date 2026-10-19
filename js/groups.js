@@ -6,32 +6,45 @@
 //   track    Projects 页上看它什么（进度 / 每周够不够钟点 / Relax 在不在范围里 / 多久没联系 / 不看），见最下面的 trackOf；min = 够不够的那个钟点（分钟）
 // 任务可以直接挂在大类上（task.group），不一定要挂在哪个计划下面。只算数，不碰页面和存储。
 
-// 色板（Projects 页和大类里能选的颜色，顺序就是色块的顺序；新建的大类 / 计划也按这个顺序轮着取色）：红 橙 黄绿 浅绿 灰 钢蓝 雾蓝 梅紫 淡紫 淡粉
-export const PALETTE = ["#CB1B45", "#F05E1C", "#C2E55C", "#86C166", "#91989F", "#4F8FA8", "#7B90D2", "#A8497A", "#C8B2F5", "#FEDFE1"];
-const [CRIMSON, ORANGE, LIME, LEAF, GRAY, STEEL, PERI, PLUM, LAVENDER, BLUSH] = PALETTE;
+// 颜色照油画颜料来：绿 viridian、蓝 ultramarine、橘 cadmium orange、紫 mauve、白 ivory、棕 burnt sienna、赭黄 ochre、茜红 alizarin
+export const PALETTE = ["#3E8E6E", "#3F62B5", "#E07A2B", "#8B62AE", "#E6DCC3", "#9A5A36", "#D2A52E", "#B5413F"];
+const [GREEN, BLUE, ORANGE, PURPLE, IVORY, BROWN, OCHRE, CRIMSON] = PALETTE;
 
 export const DEFAULTS = [
-  { name: "Work", color: PERI, labor: true, grow: "all" },
-  { name: "Fitness", color: ORANGE, labor: false, grow: "all" },
-  { name: "Chores", color: STEEL, labor: true, grow: "" },
-  { name: "Build", color: LEAF, labor: true, grow: "all" },
-  { name: "Leisure", color: LIME, labor: false, grow: "deep" },
-  { name: "Friends", color: PLUM, labor: true, grow: "", friends: true }
+  { name: "Build", color: GREEN, labor: true, grow: "all" },
+  { name: "Work", color: BLUE, labor: true, grow: "all" },
+  { name: "Friends", color: PURPLE, labor: true, grow: "", friends: true },
+  { name: "Leisure", color: ORANGE, labor: false, grow: "deep" },
+  { name: "Fitness", color: IVORY, labor: false, grow: "all" },
+  { name: "Chores", color: BROWN, labor: true, grow: "" }
 ];
 
-// 圆盘上用的霓虹版：色块压在金属上，要比色板里的颜色亮得多。十个颜色一个对一个；
-// 自己另选的颜色没有对应的，返回空（圆盘那边会把它调亮）
-const NEON = {
-  [CRIMSON]: "#FF2D4A", [ORANGE]: "#FF6A00", [LIME]: "#C6FF00", [LEAF]: "#7CFF4D", [GRAY]: "#C5CED8",
-  [STEEL]: "#29B6FF", [PERI]: "#6C8CFF", [PLUM]: "#FF4FA3", [LAVENDER]: "#D0A8FF", [BLUSH]: "#FF9EC0"
-};
+// 大类永远按这个顺序摆（她定的，2026-10）：Projects 页、下拉、Stats 的饼图 / 时间表 / 图例都是。清单里别的名字排在后面，照原来的先后
+export const ORDER = ["Build", "Work", "Friends", "Leisure", "Fitness", "Chores"];
+const rankOf = (name) => { const i = ORDER.indexOf(name); return i < 0 ? ORDER.length : i; };
+export const sortGroups = (list) => list.map((g, i) => [g, i]).sort((a, b) => rankOf(a[0].name) - rankOf(b[0].name) || a[1] - b[1]).map(([g]) => g);
+// 按大类清单排：清单里的按清单的先后，不在清单里的排后面，空名字（No project）最后
+export function byGroupOrder(groups) {
+  const at = new Map((groups || []).map((g, i) => [g.name, i]));
+  const key = (name) => (!name ? Infinity : at.has(name) ? at.get(name) : (groups || []).length + rankOf(name));
+  return (a, b) => key(a.name) - key(b.name);
+}
+
+// 圆盘上用的霓虹版：色块压在金属上，要比油画色亮得多。八个颜色一个对一个（绿 → 薄荷霓虹、蓝 → 电光蓝、橘 → 霓虹橙、紫 → 霓虹紫、
+// 白 → 纯白、棕 → 琥珀、赭黄 → 霓虹黄、茜红 → 霓虹红）；自己另选的颜色没有对应的，返回空（圆盘那边会把它调亮）
+const NEON = { [GREEN]: "#00E58F", [BLUE]: "#3A6BFF", [ORANGE]: "#FF6A00", [PURPLE]: "#B44CFF", [IVORY]: "#FFFFFF", [BROWN]: "#FFB300", [OCHRE]: "#FFE500", [CRIMSON]: "#FF2D4A" };
 export const neon = (c) => NEON[String(c || "").toUpperCase()] || "";
 
-// 以前换默认颜色时用的一次性迁移，色板换新以后不再需要：保留这个函数是因为 store.js 还在调用它，永远返回空
-export const recolor = () => [];
+// 三个大类换过默认颜色（Fitness 橘 → 白、Leisure 紫 → 橘、Friends 白 → 紫）：三个都还是原来那套才换，换过一次就不再满足、不会重复；
+// 自己改过其中任何一个的不动。→ [{ name, color }]（要换的；没有就是空）
+const RECOLOR = [["Fitness", ORANGE, IVORY], ["Leisure", PURPLE, ORANGE], ["Friends", IVORY, PURPLE]];
+export function recolor(list) {
+  const hits = RECOLOR.map(([name, from, to]) => { const g = (list || []).find((x) => match(x.name) === name); return g && String(g.color || "").toUpperCase() === from ? { name: g.name, color: to } : null; });
+  return hits.every(Boolean) ? hits : [];
+}
 
 // 以前那套亮色 → 现在的颜色（没归进大类的计划换一次）
-const OLD_COLORS = { "#B8F000": LIME, "#C6FF00": LIME, "#2F5BFF": PERI, "#FF3EA5": CRIMSON, "#FF7A1A": ORANGE, "#9B5CFF": PLUM, "#00C2A8": LEAF, "#FFC400": ORANGE, "#FF4D4D": CRIMSON };
+const OLD_COLORS = { "#B8F000": GREEN, "#C6FF00": GREEN, "#2F5BFF": BLUE, "#FF3EA5": CRIMSON, "#FF7A1A": ORANGE, "#9B5CFF": PURPLE, "#00C2A8": GREEN, "#FFC400": OCHRE, "#FF4D4D": BROWN };
 export const newColor = (c) => OLD_COLORS[String(c || "").toUpperCase()] || c || "";
 
 // 旧名字归到哪个大类：「Main - English」→ Build，「Work 1」→ Work，「Fun」→ Leisure……认不出的返回空
