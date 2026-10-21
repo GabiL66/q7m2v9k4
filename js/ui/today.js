@@ -15,11 +15,12 @@ import * as reading from "../reading.js";
 import * as Meal from "../meals.js";
 import { parseLogLine } from "../times.js";
 import * as R from "../routines.js";
-import { heroHTML, stripHTML, billHTML, colorOf, badgeOf, projectOptions, pickable, pickTarget, segHTML, lineInfo, toast, STATUS, ballHTML, taskChainHTML } from "./common.js";
+import { heroHTML, stripHTML, billHTML, colorOf, badgeOf, projectOptions, pickable, pickTarget, segHTML, lineInfo, toast, STATUS, ballHTML, taskChainHTML, groupsOf } from "./common.js";
 import { openTaskEditor } from "./editor.js";
 import { pickedId, pick, timeable, elapsed } from "./timer.js";
 import { animateNext } from "../motion.js";
 import { cheer } from "../fx.js";
+import { openMenu } from "./select.js";
 import { shopCount } from "./meals.js";
 import { withHTML, taskMeetHTML, withText, takeWith } from "./friends.js";
 import { choreHTML } from "./chores.js";
@@ -118,8 +119,12 @@ function rowHTML(c, t, tasks, phone = false, openId = "") {
   const run = store.timer();
   const running = run?.taskId === t.id;
   const want = open && !phone ? askFinished(t) : undefined;
+  // 展开那一行多两个小箭头：往上 / 往下挪一格（按住分钟数拖的不用拖的做法；电脑上 Alt+↑↓ 也行）
+  const k = tasks.indexOf(t), mv = open && tasks.length > 1 ? '<span class="row-mv">' +
+    '<button type="button" class="chip mv" data-act="row-move" data-to="-1" aria-label="Move up" title="Move up (Alt+↑)"' + (k > 0 ? "" : " disabled") + ">↑</button>" +
+    '<button type="button" class="chip mv" data-act="row-move" data-to="1" aria-label="Move down" title="Move down (Alt+↓)"' + (k < tasks.length - 1 ? "" : " disabled") + ">↓</button></span>" : "";
   const chips = '<div class="chips' + (open ? "" : " hov") + '">' + STATUS.map(([s, label]) => '<button type="button" class="chip' + (t.status === s ? " on" : "") + '" data-act="status" data-s="' + s + '">' + label + "</button>").join("") +
-    (open && t.status === "delay" && !list.length && !form ? '<button type="button" class="chip ghost" data-act="time-more">+ time</button>' : "") + "</div>";
+    (open && t.status === "delay" && !list.length && !form ? '<button type="button" class="chip ghost" data-act="time-more">+ time</button>' : "") + mv + "</div>";
   const total = store.timeTotal(t.id);
   const side = open ? "" : '<span class="rside">' +
     (running ? '<span class="tm live"><i></i><b class="num" data-since="' + run.start + '">' + elapsed(run.start) + "</b></span>" : total ? '<span class="num">' + fmtMin(total) + "</span>" : "") +
@@ -230,13 +235,46 @@ function addHTML(c, d, phone = false) {
     '<div class="add-main"><input name="title" data-keep="add-title-' + d + '" placeholder="' + (phone || d > c.today ? "Add a task" : "Add a task, or log one: Reading 14:00-15:10") + '" enterkeyhint="done">' +
     '<input name="est" class="min num" data-keep="add-est-' + d + '" type="number" inputmode="numeric" value="30" min="5" step="5" aria-label="Minutes">' +
     '<button class="btn cta" type="submit">Add</button></div>' +
-    '<div class="add-more"><select name="project" data-keep="add-plan-' + d + '" aria-label="Project or plan">' + projectOptions(projects, target) + "</select>" +
+    '<div class="add-more">' + (phone ? pjChipHTML(projects, target, d) : '<select name="project" data-keep="add-plan-' + d + '" aria-label="Project or plan">' + projectOptions(projects, target) + "</select>") +
     (people ? withHTML("add:" + d) : "") +
     '<label class="deep-tog" title="Deep work: focused, one thing at a time"><input type="checkbox" name="deep" data-keep="add-deep-' + d + '"><span>◆ Deep</span></label>' +
     (phone ? '<label class="deep-tog" title="Save it to Ideas instead of adding a task"><input type="checkbox" name="idea" data-keep="add-idea-' + d + '"><span>Idea</span></label>' : '<select name="repeat" aria-label="Repeat"><option value="">Doesn\'t repeat</option><option value="daily">↻ Every day</option>' +
       '<option value="weekdays">↻ Weekdays</option><option value="weekly">↻ Every ' + WEEKDAYS[weekday(d)] + "</option></select>" +
       '<select name="for" aria-label="For how long">' + R.LENGTHS.map(([v, l]) => '<option value="' + v + '"' + (v === R.DEFAULT_LENGTH ? " selected" : "") + ">for " + l + "</option>").join("") + "</select>") +
     "</div>" + (phone ? "" : '<div class="idea-pick" data-idea-pick="' + d + '">' + pickHTML(d, document.querySelector('[data-keep="add-title-' + d + '"]')?.value || "") + "</div>") + "</form>";
+}
+
+// ---------- 手机：选项目 ----------
+// 加任务那一排的「项目」：一个和 ◆ Deep 一样的淡底小签（带那个项目的色点）；点了从它那里长出一个下拉（她要的「像正常网站那样、有自己样子的下拉框」）——
+// 和电脑上的下拉同一套（js/ui/select.js 的 openMenu），手机上行高一点、白天粗边硬投影：大类一行粗体带色点，它的计划缩进列在下面，当前那个打勾。
+// 值放在一个藏起来的 input 里，表单照旧读
+function pjTargets(projects) {
+  const out = [{ value: "", label: "No project", color: "", top: true }];
+  for (const g of groupsOf(projects, { all: true })) {
+    if (g.name) out.push({ value: "g:" + g.name, label: g.name, color: store.groupByName(g.name)?.color || "", top: true });
+    for (const p of g.subs) out.push({ value: p.id, label: p.name, color: p.color || "", top: !g.name });
+  }
+  return out;
+}
+function pjChipHTML(projects, target, d) {
+  const hit = pjTargets(projects).find((x) => x.value === target) || { label: "No project", color: "" };
+  return '<input type="hidden" name="project" data-keep="add-plan-' + d + '" value="' + esc(target) + '">' +
+    '<button type="button" class="pj-pick' + (target ? " set" : "") + '" data-act="pj-pick" aria-haspopup="listbox" aria-label="Project or plan: ' + esc(hit.label) + '">' +
+    (hit.color ? '<i style="--pc:' + esc(hit.color) + '"></i>' : "") + "<span>" + esc(hit.label) + "</span>" + icon("down") + "</button>";
+}
+function openPicker(btn, rerender) {
+  const form = btn.closest("form[data-add]");
+  if (!form) return;
+  const d = form.dataset.add, cur = form.querySelector("[name=project]")?.value || "";
+  const list = pjTargets(pickable(store.ctx().projects)).map((x) => ({ ...x, indent: !x.top, on: x.value === cur }));
+  openMenu(btn, list, (v) => {
+    const live = document.querySelector('form[data-add="' + CSS.escape(d) + '"]');
+    const input = live?.querySelector("[name=project]"), box = live?.querySelector("[name=deep]");
+    if (input) input.value = v;
+    if (box) box.checked = store.planDeep(v);
+    addTarget[d] = v;
+    rerender();
+  }, { title: "Project or plan", search: false, cls: "menu-touch" });
 }
 
 export function dayParts(c, d) {
@@ -321,11 +359,31 @@ function logFromRow(row) {
 }
 const rowId = (el) => el.closest(".row")?.dataset.id;
 
+// 往上 / 往下挪一格：照这一天列表里现在的顺序换一下位置（和按住分钟数拖一样存）
+function moveRow(id, dir) {
+  const list = document.querySelector('.dayview .row[data-id="' + CSS.escape(id) + '"]')?.closest(".list");
+  const ids = [...(list?.querySelectorAll(".row[data-id]") || [])].map((r) => r.dataset.id), i = ids.indexOf(id), j = i + dir;
+  if (i < 0 || j < 0 || j >= ids.length) return false;
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  store.reorder(ids);
+  return true;
+}
+// 挪完页面重画了：焦点放回同一行的同一个按钮（箭头到头了变灰，就放在另一个箭头上）
+function refocusRow(id, act, to) {
+  setTimeout(() => {
+    const row = document.querySelector('.dayview .row[data-id="' + CSS.escape(id) + '"]');
+    if (!row) return;
+    const b = row.querySelector('[data-act="' + act + '"]' + (to ? '[data-to="' + to + '"]' : "") + ":not([disabled])") || row.querySelector(".row-mv button:not([disabled])") || row.querySelector("button");
+    b?.focus({ preventScroll: true });
+  }, 60);
+}
+
 export function initToday(rerender) {
   on(document, "click", ".dayview [data-act]", (e, el) => {
     const act = el.dataset.act, id = rowId(el);
     // 换日子：往后翻列表往左滑，往前翻往右滑
     const go = (d) => { if (d !== shownDate()) animateNext(d > shownDate() ? "next" : "prev"); showDate(d); rerender(); };
+    if (act === "pj-pick") { openPicker(el, rerender); return; }
     if (act !== "edit" && !act.startsWith("day-")) animateNext();
     if (act === "status") {
       logOpen.delete(id);
@@ -337,6 +395,7 @@ export function initToday(rerender) {
     else if (act === "time-edit") { timeEdit = el.dataset.tid; rerender(); requestAnimationFrame(() => setTimeout(() => document.querySelector(".tm-edit [name=from]")?.focus(), 0)); }
     else if (act === "time-edit-x") { timeEdit = ""; rerender(); }
     else if (act === "time-more") { logOpen.add(id); rerender(); }
+    else if (act === "row-move") { focus = id; if (moveRow(id, Number(el.dataset.to))) refocusRow(id, act, el.dataset.to); }
     else if (act === "chain-all") { chainAll.add(id); rerender(); }
     else if (act === "time-log") logFromRow(el.closest(".row"));
     else if (act === "dish-open") { dishOpen.add(id); rerender(); requestAnimationFrame(() => setTimeout(() => document.querySelector('.dish-quick[data-task="' + CSS.escape(id) + '"] [name=name]')?.focus(), 0)); }
@@ -354,7 +413,7 @@ export function initToday(rerender) {
     }
     else if (act === "od-toggle") { overdueOpen = !overdueOpen; rerender(); }
     else if (act === "week-seen") store.setLocal({ weekSeen: el.dataset.week });
-    else if (act === "open-ideas") { store.setLocal({ projMode: "ideas" }); location.hash = "projects"; }
+    else if (act === "open-ideas") { store.setLocal({ projSide: "ideas" }); location.hash = "projects"; }
     else if (act === "spread") store.spreadOverdue();
     else if (act === "all-today") {
       const c = store.ctx();
@@ -363,6 +422,15 @@ export function initToday(rerender) {
     else if (act === "day-next") go(addDays(shownDate(), 1));
     else if (act === "day-today") go(store.today());
     else if (act === "day-pick") go(el.dataset.date);
+  });
+
+  // 电脑上：焦点在某一行里（⋯、状态按钮……）按 Alt+↑↓ = 往上 / 往下挪一格
+  on(document, "keydown", ".dayview .row[data-id]", (e, row) => {
+    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || e.target.matches("input, textarea, select")) return;
+    e.preventDefault();
+    const act = document.activeElement?.dataset?.act || "", to = document.activeElement?.dataset?.to || "";
+    animateNext();
+    if (moveRow(row.dataset.id, e.key === "ArrowUp" ? -1 : 1)) refocusRow(row.dataset.id, act, to);
   });
 
   // 点任务：还没展开的 → 展开它（今天能计时的同时选中，底部浮条换成它）；已经展开的再点名字 → 展开说明

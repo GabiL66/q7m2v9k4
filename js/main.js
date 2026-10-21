@@ -15,7 +15,7 @@ import { initSelect } from "./ui/select.js";
 import { todayHTML, initToday, shownDate, showDate } from "./ui/today.js";
 import { calendarHTML, poolHTML, initCalendar, handleDrop } from "./ui/calendar.js";
 import { projectsHTML, initProjects, refreshProjectEditor, projectAlerts } from "./ui/projects.js";
-import { initGoals } from "./ui/goals.js";
+import { initGoals, goalDrop } from "./ui/goals.js";
 import { initLinks, afterRender as linksAfterRender } from "./ui/links.js";
 import { initIdeas, ideasPhoneHTML } from "./ui/ideas.js";
 import { settingsHTML, initSettings } from "./ui/settings.js";
@@ -30,8 +30,9 @@ import { readingHTML, initReading } from "./ui/reading.js";
 import { mealsHTML, shopHTML, initMeals, refreshMealEditor, mealDrop } from "./ui/meals.js";
 import { friendsHTML, initFriends, refreshFriendEditor, friendsDue } from "./ui/friends.js";
 import { renderSun, initSun } from "./ui/sun.js";
-import { createView as moneyView } from "./ui/money.js";
+import { createSpending } from "./ui/spending.js";
 import { initIsland, refreshIsland, closeIsland } from "./ui/island.js";
+import { fxChanged } from "./ui/money.js";
 import { animateNext, animateSoft, takeTransition, nameParts, dusk, measurePills, placePills, glidePills, rollNumbers, titleIn, initEdgeGlow } from "./motion.js";
 import { lookAt, nextTurn } from "./day.js";
 
@@ -94,11 +95,11 @@ function sidebarHTML(c, view) {
     '<footer class="sfoot"><button type="button" class="sync-pill' + (st.bad ? " bad" : "") + '" data-act="sync" title="Sync now">' + icon("sync") + '<i class="sync-ld" aria-hidden="true">' + "<i></i>".repeat(9) + "</i>" + '<span data-sync-status>' + esc(st.text) + "</span></button></footer></div>";
 }
 
-// ---------- 记账（电脑上的 Spending 页；手机上是从顶上拉出来的面板，见 js/ui/island.js） ----------
-// 那一页自己管自己（时间轴滚到哪、图表点到哪都留着），整页重画时不重新生成：已经挂在 #main 上就不动它
+// ---------- 记账（电脑上的 Spending 页，js/ui/spending.js；手机上是从顶上拉出来的面板，见 js/ui/island.js） ----------
+// 那一页自己管自己（看到哪一期、填到一半的那一行都留着），整页重画时不重新生成：已经挂在 #main 上就不动它
 let desk = null;
 function showDesk() {
-  if (!desk) desk = moneyView("desk");
+  if (!desk) desk = createSpending();
   if (desk.el.parentNode !== main || main.children.length !== 1) { main.replaceChildren(desk.el); desk.show(); }
 }
 
@@ -283,7 +284,7 @@ initLinks();
 initIdeas(render);
 initSettings();
 initEditor();
-initDnd((payload, target) => (target.startsWith("m") ? mealDrop(payload, target) : handleDrop(payload, target)));
+initDnd((payload, target) => (target.startsWith("gcol:") ? goalDrop(payload, target) : target.startsWith("m") ? mealDrop(payload, target) : handleDrop(payload, target)));
 initStats(render);
 initTimer(render);
 initChores(render);
@@ -300,6 +301,8 @@ store.subscribe((meta) => {
   if (!meta.quiet) render();
   else paintSync();
   if (meta.dirty) sync.queue();
+  // 记账的汇率在 Settings 里（spend-fx）：改了（这台设备或同步过来的）记账那两块跟着换算
+  if (fxChanged()) { if (desk && desk.el.isConnected) desk.refresh(); refreshIsland(); }
 });
 store.onUndo((label, before) => toast(label, () => store.undo(before)));
 reading.subscribe(() => { if (route() === "reading") render(); });
@@ -310,12 +313,12 @@ spend.subscribe((meta) => {
   refreshIsland();
 });
 initIsland({ isPhone: () => phoneMQ.matches, onToday: () => route() === "today" && document.getElementById("modal").hidden });
-// 电脑上 Spending 页：按 N 记一笔（正在打字的时候不算）
+// 电脑上 Spending 页：按 N 记一笔，按 / 跳到搜索（正在打字的时候不算）
 addEventListener("keydown", (e) => {
-  if (e.key !== "n" || e.metaKey || e.ctrlKey || e.altKey || phoneMQ.matches || route() !== "spending" || !desk) return;
+  if ((e.key !== "n" && e.key !== "/") || e.metaKey || e.ctrlKey || e.altKey || phoneMQ.matches || route() !== "spending" || !desk) return;
   if (e.target.closest?.("input, textarea, select, [contenteditable]") || !document.getElementById("modal").hidden) return;
   e.preventDefault();
-  desk.startNew();
+  if (e.key === "n") desk.startNew(); else desk.focusSearch();
 });
 sync.onStatus(paintSync);
 

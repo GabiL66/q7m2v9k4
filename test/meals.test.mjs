@@ -228,6 +228,7 @@ test("restock: the date one cycle on, and what's coming in the next three months
   assert.equal(M.nextAfter("2026-10-08", { n: "", unit: "m" }), "");
   assert.equal(M.cycleText({ n: 1, unit: "m" }), "every month");
   assert.equal(M.cycleText({ n: 6, unit: "w" }), "every 6 weeks");
+  assert.deepEqual([{ n: 3, unit: "m" }, { n: 2, unit: "y" }, { n: 3, unit: "d" }, { n: 1, unit: "w" }, { n: 4 }, { once: true, n: 3 }].map(M.cycleShort), ["3m", "2y", "3d", "1w", "4m", ""]);
   const D = { sup: {
     vit: { id: "vit", name: "Vitamin D", price: 20, n: 30, unit: "d", next: "2026-10-20" },
     brush: { id: "brush", name: "Brush heads", price: 35, n: 3, unit: "m", next: "2026-09-15" },
@@ -339,4 +340,77 @@ test("from Friday the plan starts at next week", () => {
   assert.equal(M.planStart("2026-10-09", "sunday"), "2026-10-11");
   assert.equal(M.planStart("2026-10-10", "sunday"), "2026-10-11");
   assert.equal(M.planStart("2026-10-11", "sunday"), "2026-10-11");
+});
+
+// Big buys：一天合多少按买的那种钱算；用到今天，或者用到退役那天
+const SHEET = ["Name\tCategory\tCurrency\tPrice\tPurchase\tRetired",
+  "Sony A7M4\tCamera\tRMB\t21400\t2023/05/31\t", "Iphone 15\tPhone\tCAD\t1670\t2023/11/21\t", "Airpods Pro\tAudio\t\t500\t2023/08/01\t",
+  "B&O A1\tAudio\tRMB\t1000\t2019/11/11\t2024/01/01"].join("\n");
+
+test("big buys: days, per day in what you paid with, the other currency at the rate", () => {
+  const T = "2026-10-19";
+  const rows = M.parseGear(SHEET);
+  assert.deepEqual(rows[0], { name: "Sony A7M4", cat: "Camera", cur: "cny", price: 21400, bought: "2023-05-31", retired: "" });
+  assert.equal(rows[1].cur, "cad");
+  assert.equal(rows[2].cur, "cny", "no currency: RMB");
+  const sony = M.gearRow(rows[0], T, 5), phone = M.gearRow(rows[1], T, 5);
+  assert.equal(sony.days, 1237);
+  assert.equal(sony.perDay.toFixed(1), "17.3");
+  close(sony.cad, 4280);
+  assert.equal(phone.days, 1063);
+  close(phone.cny, 8350);
+  assert.equal(M.gearRow(rows[1], T, 5.2).cny, 1670 * 5.2, "rate is live");
+  // 汇率对加币、可以是一个数也可以是 { cny }；旧的 rate 一格照样读；显示默认加币
+  assert.deepEqual(M.gearRates({ rate: 4.81 }), { cad: 1, cny: 4.81 });
+  assert.deepEqual(M.gearRates({ rate: 4.81, rates: { cny: 5.1 } }), { cad: 1, cny: 5.1 }, "the new field wins");
+  assert.deepEqual(M.gearRates({}), { cad: 1, cny: 5 });
+  close(M.convert(21400, "cny", "cad", { cny: 5 }), 4280);
+  close(M.convert(1670, "cad", "cny", 5), 8350);
+  assert.equal(M.gearShow({}), "cad");
+  assert.equal(M.gearShow({ gearShow: "cny" }), "cny");
+  assert.equal(M.gearShow({ gearShow: "eur" }), "cad", "unknown: CAD");
+  close(M.gearRow(rows[0], T, { cny: 5 }).perDayCad, 21400 / 5 / 1237);
+  const pods = M.gearRow(rows[2], T, 5);
+  assert.ok(pods.cheap, "¥500 over 1175 days < ¥2 a day");
+  assert.ok(!sony.cheap && !phone.cheap);
+  assert.ok(M.gearRow({ cur: "cad", price: 100, bought: "2026-01-01" }, T, 5).cheap, "under $0.5 a day");
+  const bo = M.gearRow(rows[3], T, 5);
+  assert.ok(bo.retired && !bo.cheap, "retired: no hint");
+  assert.equal(bo.days, 1512, "counted up to the day it was retired");
+  assert.equal(phone.age, "three", "Nov 2023: within three years");
+  assert.equal(sony.age, "", "May 2023: older than three years");
+  assert.equal(M.gearRow({ bought: "2025-10-20" }, T).age, "year");
+  assert.equal(M.gearRow({ bought: "2025-10-19" }, T).age, "three", "exactly 12 months ago: the dim one");
+  const L = M.gearList({ gear: Object.fromEntries(rows.map((r, i) => [i, { ...r, id: String(i) }])) }, T, 5);
+  assert.deepEqual(L.live.map((r) => r.g.name), ["Sony A7M4", "Iphone 15", "Airpods Pro"], "highest per day first");
+  // 用户报的两处：Ultherapy $2,500 / 73 天（$34.2）要在 Sony ¥21,400 / 1237 天（¥17.3）上面；
+  // Sennheiser ¥1,000 / 1719 天（¥0.6）要在 B&O ¥1,000 / 2534 天（¥0.4）上面——总价一样，按一天比
+  const mine = { sony: { id: "sony", name: "Sony A7M4", cur: "cny", price: 21400, bought: "2023-05-31" }, ul: { id: "ul", name: "Ultherapy", cur: "cad", price: 2500, bought: "2026-08-07" },
+    bo: { id: "bo", name: "B&O A1", cur: "cny", price: 1000, bought: "2019-11-11" }, se: { id: "se", name: "Sennheiser", cur: "cny", price: 1000, bought: "2022-02-03" },
+    ap: { id: "ap", name: "Airpods Pro", cur: "cny", price: 500, bought: "2023-08-01" } };
+  for (const r of [4.81, 5, 9]) assert.deepEqual(M.gearList({ gear: mine }, T, r).live.map((x) => x.g.name), ["Ultherapy", "Sony A7M4", "Sennheiser", "Airpods Pro", "B&O A1"], "AirPods ¥0.43 vs B&O ¥0.39: both show ¥0.4");
+  assert.equal(M.gearEmoji(rows[0]), "📷", "category from the sheet, by name");
+  assert.equal(M.gearTag({ cat: "phone" }), "phone");
+  assert.equal(M.gearEmoji({ cat: "Tablet" }), "💻", "tablets and computers are one kind");
+  assert.equal(M.gearTag({ cat: "tablet" }), "computer");
+  assert.equal(M.gearTag({ cat: "Computer" }), "computer");
+  assert.equal(M.gearEmoji({ cat: "beauty" }), "💅");
+  assert.equal(M.gearEmoji({ cat: "speaker" }), "🔊");
+  assert.equal(M.gearEmoji({ cat: "Drone" }), "🪐", "unknown: other");
+  assert.deepEqual(L.gone.map((r) => r.g.name), ["B&O A1"]);
+});
+
+test("big buys: rows without a header read like the old sheet; pasting again updates by name", () => {
+  const rows = M.parseGear("Sony A7M4\t4280\t1237\t21400\t2023/05/31\t17\nIpad Air5\t665\t847\t3325\t2024/06/24\t3");
+  assert.deepEqual(rows.map((r) => [r.name, r.cur, r.price, r.bought]), [["Sony A7M4", "cny", 21400, "2023-05-31"], ["Ipad Air5", "cny", 3325, "2024-06-24"]]);
+  const D = { gear: { a: { id: "a", name: "Sony A7M4", cat: "Camera", cur: "cny", price: 21400, bought: "2023-05-31", retired: "" } } };
+  const out = M.importGear(D, [{ name: "sony a7m4", cat: "", cur: "cny", price: 0, bought: "", retired: "2026-10-01" }, { name: "Kindle", cat: "", cur: "cad", price: 140, bought: "2025-01-02", retired: "" }], () => "new");
+  assert.deepEqual(out.map((r) => [r.id, r.cat, r.price, r.retired]), [["a", "Camera", 21400, "2026-10-01"], ["new", "", 140, ""]]);
+  assert.deepEqual(M.parseGear(""), []);
+});
+
+test("big buys live in Settings rows like the rest of Meals", () => {
+  store.importMeals({ gear: [{ id: "g1", name: "Sony A7M4", cat: "Camera", cur: "cny", price: 21400, bought: "2023-05-31", retired: "" }] });
+  assert.ok(store.get("settings", "meal-gear:g1"));
+  assert.equal(store.meals().gear.g1.name, "Sony A7M4");
 });
