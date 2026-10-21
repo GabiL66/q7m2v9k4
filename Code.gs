@@ -4,9 +4,9 @@
 var SECRET = 'CHANGE_ME';
 
 // 每张表：页名、主键、[字段, 表头, 类型, 标记]。列按表头文字找，可以挪位置、中间插自己的列。
-// 类型 text / num / date / bool / json / status / pstatus / clock（钟点 09:10，存成文字）。
+// 类型 text / num / date / bool / json / status（Done / Delay / Drop）/ pstatus / clock（钟点 09:10，存成文字）。
 // 标记 calc = 脚本自己算，App 不写；hide = setup 时把这列藏起来（右键可取消隐藏）。
-var VERSION = 5;   // 页面和脚本对版本：页面不是这个版本就不收它的数据，免得新旧格式混在一起
+var VERSION = 6;   // 页面和脚本对版本：页面不是这个版本就不收它的数据，免得新旧格式混在一起
 var T = {
   // 计时记录在 Times 一格里：「09:10-09:40 30m; 20m」。Project = 挂在哪个计划上（脚本填名字）；Group = 属于哪个大类（可以不挂计划、直接挂在大类上）
   tasks: { sheet: 'Tasks', key: 'id', main: 'title', cols: [
@@ -51,11 +51,11 @@ var KEEP_DELETED_DAYS = 14;   // 删除记录只是给还没同步的设备看�
 var ARCHIVE = 'Archive';
 var DELETED = 'Deleted';
 var DELETED_HEADER = ['Table', 'ID', 'Deleted at', 'Synced'];
-var STATUS_OUT = { done: 'Done', partial: 'Partial', later: 'Later', drop: 'Drop' };
+var STATUS_OUT = { done: 'Done', delay: 'Delay', drop: 'Drop' };
 var PSTATUS_OUT = { active: 'Active', done: 'Done', dropped: 'Dropped' };
-// 老表里出现过的写法都认
-var WORDS = { done: 'done', ok: 'done', '完成': 'done', partial: 'partial', '部分': 'partial',
-  later: 'later', deferred: 'later', '顺延': 'later', drop: 'drop', dropped: 'drop', '放弃': 'drop' };
+// 老表里出现过的写法都认。以前的 Partial、Later 并成了 Delay
+var WORDS = { done: 'done', ok: 'done', '完成': 'done', delay: 'delay', delayed: 'delay', '延后': 'delay',
+  partial: 'delay', '部分': 'delay', later: 'delay', deferred: 'delay', '顺延': 'delay', drop: 'drop', dropped: 'drop', '放弃': 'drop' };
 var RENAME = {
   '日期': 'Date', '任务内容': 'Task', '预计完成时间（分钟）': 'Est min', '实际时长（分钟）': 'Actual min',
   '拟定顺序': 'Order', '分类': 'Category', '是否完成': 'Status', '实际次序（自动）': 'Done order',
@@ -79,6 +79,7 @@ function setup() {
   validate_();
   Object.keys(T).forEach(function (name) { readAll_(name, true); });   // 没有 ID 的行补上
   if (old) migrate_();
+  delayAndRecords_(ss);
   timeIntoTasks_(ss);
   capacityIntoSettings_(ss);
   routinesIntoProjects_();
@@ -216,6 +217,33 @@ function timesText_(list) {
   return list.map(function (x) { return (x.from && x.to ? x.from + '-' + x.to + ' ' : '') + Math.round(x.min) + 'm'; }).join('; ');
 }
 
+// 第 6 版：Partial / Later 并成 Delay（「Partial｜原因」这种只换前面那个词）；
+// 时间只看记下的了——以前没计时就标了 Done 的（Times、Actual 都空着），补一段不带钟点的记录 = 预计，以前的统计数字不变。
+// 动之前先把 Tasks 整页复制成「Backup Tasks 日期」。Updated 不动（设备上更晚的改动照样算数），Synced 记成现在，各设备下次同步会拉到
+function delayAndRecords_(ss) {
+  var sh = sheetOf_('tasks'), names = head_(sh), col = cols_(T.tasks, names), data = body_(sh, names), now = Date.now();
+  if (col.status < 0 || !data.length) return;
+  var status = [], times = [], actual = [], synced = [], hits = 0;
+  data.forEach(function (row) {
+    var raw = String(row[col.status] || '').trim(), word = raw.split(/\s*[｜|]\s*/)[0], hit = false;
+    var s = row[col.status], tm = col.times >= 0 ? row[col.times] : '', a = col.actual >= 0 ? row[col.actual] : '';
+    if (raw && WORDS[word.toLowerCase()] === 'delay' && word !== 'Delay') { s = 'Delay' + raw.slice(word.length); hit = true; }
+    var done = raw && WORDS[word.toLowerCase()] === 'done', est = Number(row[col.est]) || 0;
+    if (done && col.times >= 0 && col.actual >= 0 && String(tm || '').trim() === '' && !(Number(a) > 0) && est > 0 && String(row[col.id] || '').indexOf('chore-') !== 0) {
+      tm = Math.round(est) + 'm'; a = est; hit = true;
+    }
+    if (hit) hits++;
+    status.push(s); times.push(tm); actual.push(a); synced.push(hit ? now : row[col.synced]);
+  });
+  if (!hits) return;
+  var to = 'Backup Tasks ' + Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd');
+  if (!ss.getSheetByName(to)) sh.copyTo(ss).setName(to);
+  setCol_(sh, col.status, status);
+  if (col.times >= 0) setCol_(sh, col.times, times);
+  if (col.actual >= 0) setCol_(sh, col.actual, actual);
+  if (col.synced >= 0) setCol_(sh, col.synced, synced);
+}
+
 // Time 页（一段一行）并进 Tasks 的 Times 列，Actual = 加起来。任务的 Updated 不动，设备上更晚的改动照样算数
 function timeIntoTasks_(ss) {
   var sh = ss.getSheetByName('Time');
@@ -340,7 +368,7 @@ function validate_() {
     return i ? sh.getRange(2, i, Math.max(sh.getMaxRows() - 1, 1), 1) : null;
   };
   var r;
-  if ((r = col('tasks', 'Status'))) r.setDataValidation(list(['Done', 'Partial', 'Later', 'Drop']));
+  if ((r = col('tasks', 'Status'))) r.setDataValidation(list(['Done', 'Delay', 'Drop']));
   if ((r = col('projects', 'Status'))) r.setDataValidation(list(['Active', 'Done', 'Dropped']));
   if ((r = col('projects', 'Kind'))) r.setDataValidation(list(['Total', 'Regular']));
   if ((r = col('projects', 'Place'))) r.setDataValidation(list(['Auto', 'Pool']));
@@ -357,7 +385,7 @@ function day_(v, tz) {
 function statusIn_(v) {
   var s = String(v || '').trim();
   if (!s) return '';
-  return WORDS[s.split(/\s*[｜|]\s*/)[0].toLowerCase()] || 'partial';
+  return WORDS[s.split(/\s*[｜|]\s*/)[0].toLowerCase()] || 'delay';
 }
 
 function pstatusIn_(v) {
@@ -611,9 +639,10 @@ function planNames_() {
   return PLAN_NAMES;
 }
 
+// 推进了多少计划（和 js/engine.js 的 planMin 一样）：标了 Done 的算整条做完；没标的按记下的时间算，不超过预计
 function plan_(t) {
   if (t.status === 'done') return Number(t.est) || 0;
-  return t.status === 'partial' ? Math.min(Number(t.actual) || 0, Number(t.est) || 0) : 0;
+  return Math.min(Number(t.actual) || 0, Number(t.est) || 0);
 }
 
 function recount_() {
@@ -1142,18 +1171,28 @@ function archive_(before, now) {
 }
 
 // ================= 记账：单独一个表格（链接存在 Settings 的 spend） =================
-// 四页（没有就建）：Transactions 一行一笔（Date / Kind / Category / Note / Amount，后面藏着 ID / Updated / Synced）、
+// 四页（没有就建）：Transactions 一行一笔（Date / Kind / Category / Note / Amount / Currency（空着 = CAD），后面藏着 ID / Updated / Synced）、
 // Budgets（From 哪个月起 / Amount 每月多少）、Categories（Kind / Name / Budget：Base = 预算的底座、Not counted = 不算进预算 / Hidden）、
 // Deleted（藏起来：删掉的那几笔，给别的设备看）。表格里可以直接改、直接加行（没有 ID 的行脚本会补上）。
-// 网页发来 { since, put: [{id, d, v, c, n, u}], del: [{id, u}], budgets?, cats? }：v 是分，负的 = 支出；u 是改的时间，同一笔后改的算数。
-// 回 { now, rows: since 之后变过的那几笔（since = 0 就是全部）, dels, budgets, cats }
+// 网页发来 { since, put: [{id, d, v, c, n, u, cur?}], del: [{id, u}], budgets?, cats? }：v 是那种钱的分，负的 = 支出；cur 是哪种钱（cny / usd …，没有 = 加币）；
+// u 是改的时间，同一笔后改的算数。回 { now, rows: since 之后变过的那几笔（since = 0 就是全部）, dels, budgets, cats, curs: true（这版认币种） }。
+// 旧表格没有 Currency 那一列：第一次同步时加在最后
 var SPEND = {
-  tx: { sheet: 'Transactions', head: ['Date', 'Kind', 'Category', 'Note', 'Amount', 'ID', 'Updated', 'Synced'], hide: ['ID', 'Updated', 'Synced'] },
+  tx: { sheet: 'Transactions', head: ['Date', 'Kind', 'Category', 'Note', 'Amount', 'Currency', 'ID', 'Updated', 'Synced'], hide: ['ID', 'Updated', 'Synced'] },
   budgets: { sheet: 'Budgets', head: ['From', 'Amount'] },
   cats: { sheet: 'Categories', head: ['Kind', 'Name', 'Budget', 'Hidden'] },
   dead: { sheet: 'Deleted', head: ['ID', 'At'] }
 };
 var SPEND_ROLE_OUT = { base: 'Base', outside: 'Not counted' };
+// 币种：网页里的代号 ↔ 表格里写的（人民币写 RMB）。表格里手打 CNY、¥、usd 也认；空着 = 加币
+var SPEND_CUR = { cny: 'RMB', usd: 'USD', eur: 'EUR', gbp: 'GBP', jpy: 'JPY', hkd: 'HKD' };
+function spendCur_(cell) {
+  var t = String(cell || '').trim().toUpperCase();
+  if (!t || t === 'CAD' || t === '$') return '';
+  if (t === 'CNY' || t === '¥' || t === '人民币') return 'cny';
+  for (var k in SPEND_CUR) if (SPEND_CUR[k] === t || k.toUpperCase() === t) return k;
+  return '';
+}
 
 function spendBook_() {
   var row = readAll_('settings').filter(function (r) { return r.id === 'spend'; })[0];
@@ -1246,7 +1285,7 @@ function spend_(req) {
   var cell = function (x) {
     var row = data.length && at[x.id] !== undefined ? data[at[x.id]].slice() : Array(tx.width).fill('');
     row[c.Date] = String(x.d || ''); row[c.Kind] = x.v > 0 ? 'Income' : 'Expense'; row[c.Category] = toCell_('text', x.c || '');
-    row[c.Note] = toCell_('text', x.n || ''); row[c.Amount] = Math.abs(Number(x.v) || 0) / 100;
+    row[c.Note] = toCell_('text', x.n || ''); row[c.Amount] = Math.abs(Number(x.v) || 0) / 100; row[c.Currency] = SPEND_CUR[x.cur] || '';
     row[c.ID] = x.id; row[c.Updated] = Number(x.u) || now; row[c.Synced] = now;
     return row;
   };
@@ -1290,13 +1329,15 @@ function spend_(req) {
     if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(d) || (since && !(Number(r[c.Synced]) >= since))) return;
     var v = Math.round(Number(String(r[c.Amount]).replace(/[^\d.]/g, '')) * 100) || 0, cat = String(r[c.Category] || '').trim();
     var isIn = /^inc/i.test(String(r[c.Kind] || '')) || (!String(r[c.Kind] || '').trim() && inc[cat]);
-    rows.push({ id: id, d: d, v: isIn ? v : -v, c: cat, n: String(r[c.Note] || ''), u: Number(r[c.Updated]) || 0 });
+    var cur = spendCur_(r[c.Currency]), one = { id: id, d: d, v: isIn ? v : -v, c: cat, n: String(r[c.Note] || ''), u: Number(r[c.Updated]) || 0 };
+    if (cur) one.cur = cur;
+    rows.push(one);
   });
   var dels = since ? spendData_(dead).filter(function (r) { return Number(r[1]) >= since; }).map(function (r) { return String(r[0]); }) : [];
   // 删除记录只留 14 天
   var keep = spendData_(dead).filter(function (r) { return now - Number(r[1]) < KEEP_DELETED_DAYS * 864e5; });
   if (keep.length < spendData_(dead).length) spendWrite_(dead, keep);
-  return { ok: true, now: now, rows: rows, dels: dels, budgets: spendBudgets_(book), cats: cats };
+  return { ok: true, now: now, rows: rows, dels: dels, budgets: spendBudgets_(book), cats: cats, curs: true };
 }
 
 // ================= 网页接口 =================
