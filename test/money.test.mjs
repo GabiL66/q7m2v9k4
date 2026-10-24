@@ -31,15 +31,37 @@ test("a month uses the latest budget set on or before it", () => {
   assert.equal(M.yearBudget(budgets, 2026, "2026-10-16"), 358000 * 8 + 303500 + 358000);
 });
 
-test("over budget: a day compares what's outside House and Bonds with the daily allowance", () => {
+test("over budget (orange) only once the month's budget is used up: a day bigger than the daily allowance isn't over", () => {
   const ix = M.index(rows, cats);
   const al = M.allowance(ix, budgets, 2026, 10);
   assert.equal(Math.round(al), Math.round((358000 - 145000) / 31));
-  assert.equal(M.isOver(ix, budgets, { y: 2026, m: 10, d: 2 }, "day", "2026-10-16"), false);   // the deposit doesn't count
   const big = M.index([...rows, e("2026-10-05", -9000, "Clothes")], cats);
-  assert.equal(M.isOver(big, budgets, { y: 2026, m: 10, d: 5 }, "day", "2026-10-16"), true);
+  assert.equal(M.isOver(big, budgets, { y: 2026, m: 10, d: 5 }, "day", "2026-10-16"), false, "$90 on one day is more than the daily allowance, but the month is fine");
+  const blown = M.index([...rows, e("2026-10-05", -220000, "Clothes"), e("2026-10-06", -500, "Food")], cats);
+  assert.equal(M.isOver(blown, budgets, { y: 2026, m: 10, d: 4 }, "day", "2026-10-16"), false);
+  assert.equal(M.isOver(blown, budgets, { y: 2026, m: 10, d: 5 }, "day", "2026-10-16"), true, "rent + the rest so far went past $3,580 that day");
+  assert.equal(M.isOver(blown, budgets, { y: 2026, m: 10, d: 6 }, "day", "2026-10-16"), true, "and every day after it");
+  const bonds = M.index([...rows, e("2026-10-05", -300000, "Bonds")], cats);
+  assert.equal(M.isOver(bonds, budgets, { y: 2026, m: 10, d: 5 }, "day", "2026-10-16"), false, "Bonds stay out of the budget");
   assert.equal(M.isOver(ix, budgets, { y: 2026, m: 10 }, "month", "2026-10-16"), false);
+  assert.equal(M.isOver(blown, budgets, { y: 2026, m: 10 }, "month", "2026-10-16"), true);
   assert.equal(M.isOver(ix, [], { y: 2026, m: 10 }, "month", "2026-10-16"), false);   // no budget, never orange
+  assert.equal(M.isOver(blown, [], { y: 2026, m: 10, d: 5 }, "day", "2026-10-16"), false);
+});
+
+test("the chart's reading dot is orange only past the budget: the month's, or in a year the budget up to that month's end", () => {
+  const blown = M.index([...rows, e("2026-10-05", -220000, "Clothes")], cats);
+  const c = M.monthChart(blown, budgets, 2026, 10, "2026-10-16");
+  assert.equal(c.over(4), false, "above the slanted budget line isn't over yet");
+  assert.equal(c.over(5), true);
+  assert.equal(M.monthChart(M.index(rows, cats), budgets, 2026, 10, "2026-10-16").over(16), false);
+  const y = M.yearChart(blown, budgets, 2026, "2026-10-16"), day = (m, d) => M.dayOfYear(2026, m, d);
+  assert.equal(y.over(day(9, 30)), false);
+  assert.equal(y.over(day(10, 5)), false, "Jan–Oct budgets add up to far more than what's been spent");
+  const huge = M.yearChart(M.index([...rows, e("2026-10-05", -3500000, "Clothes")], cats), budgets, 2026, "2026-10-16");
+  assert.equal(huge.over(day(9, 30)), false, "September is judged against the budget up to September's end");
+  assert.equal(huge.over(day(10, 4)), false);
+  assert.equal(huge.over(day(10, 5)), true, "past everything budgeted up to the end of October");
 });
 
 test("the month chart starts at the base, adds the rest day by day, and trends to the month end", () => {
@@ -89,18 +111,40 @@ test("money and dates read the way the page shows them", () => {
   assert.equal(M.addDaysISO("2026-03-01", -1), "2026-02-28");
 });
 
-test("the year chart goes day by day: each month starts with its House, budget months join up", () => {
+test("the year chart goes day by day: every record on its own day, House too; the budget grows with House paid plus a daily allowance", () => {
   const ix = M.index(rows, cats), c = M.yearChart(ix, budgets, 2026, "2026-10-16");
   assert.equal(c.n, 365);
   assert.equal(c.last, M.dayOfYear(2026, 10, 16));
-  const aug1 = M.dayOfYear(2026, 8, 1), oct3 = M.dayOfYear(2026, 10, 3);
+  const aug1 = M.dayOfYear(2026, 8, 1), aug20 = M.dayOfYear(2026, 8, 20), oct3 = M.dayOfYear(2026, 10, 3);
   assert.equal(c.val(aug1 - 1), 0);
-  assert.equal(c.val(aug1), 145000 + 6500);   // the whole month's House (rent + internet) counts from the 1st, like the month chart
+  assert.equal(c.val(aug1), 145000, "the rent lands on the 1st; the internet bill isn't there yet");
+  assert.equal(c.val(aug20), 145000 + 6500, "the internet bill lands on the 20th, the day it was paid");
   const aug = M.sumOf(ix, { y: 2026, m: 8 }, "month"), sep = M.sumOf(ix, { y: 2026, m: 9 }, "month");
   assert.equal(c.val(oct3), M.counted(aug) + M.counted(sep) + 145000 + 2315 + 899);   // the deposit doesn't count
-  assert.equal(c.budgetLine[M.dayOfYear(2026, 9, 30)], 358000 * 8 + 303500);
+  assert.equal(c.baseLine[aug20] - c.baseLine[aug1 - 1], 151500, "House is a running total by day");
+  const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 0.01, msg + ": " + a + " vs " + b);   // 每天的额度是小数，加起来差一点点
+  near(c.budgetLine[M.dayOfYear(2026, 9, 30)], 358000 * 8 + 303500, "each month's budget is all there by its last day");
+  near(c.budgetLine[aug1], 358000 * 7 + 145000 + Math.max(0, 358000 - 151500) / 31, "paying the rent raises the budget the same day");
+  assert.equal(c.B, M.yearBudget(budgets, 2026, "2026-10-16"));
   assert.equal(M.dateOfDay(2026, oct3), "2026-10-03");
   assert.ok(c.val(365) > c.val(c.last));
+});
+
+test("without House: both charts leave out the base categories and the budget is what's left after them", () => {
+  const ix = M.index(rows, cats);
+  const y = M.yearChart(ix, budgets, 2026, "2026-10-16", { house: false });
+  assert.equal(y.val(M.dayOfYear(2026, 8, 1)), 0, "no rent");
+  assert.equal(y.val(M.dayOfYear(2026, 10, 3)), 2315 + 899);
+  assert.equal(y.baseLine[365], 0);
+  assert.ok(Math.abs(y.budgetLine[M.dayOfYear(2026, 9, 30)] - (358000 * 7 + (358000 - 151500) + (303500 - 151500))) < 0.01);
+  assert.equal(y.B, 358000 * 7 + (358000 - 151500) + (303500 - 151500) + (358000 - 145000));
+  const m = M.monthChart(ix, budgets, 2026, 10, "2026-10-16", { house: false });
+  assert.equal(m.base, 0);
+  assert.equal(m.val(1), 0);
+  assert.equal(m.val(3), 2315 + 899);
+  assert.equal(m.B, 358000 - 145000);
+  assert.equal(m.pace(31), 358000 - 145000);
+  assert.equal(M.monthChart(ix, budgets, 2026, 10, "2026-10-16").val(3), 145000 + 2315 + 899, "the full chart is unchanged");
 });
 
 test("cards compare with the previous six months, cut at the same day for the current month", () => {
@@ -156,4 +200,34 @@ test("currencies survive an .md round trip and one-line imports; recommendations
   assert.equal(M.curFromText("−HK$5"), "hkd");
   const rent = [{ ...e("2026-09-01", -500000, "House"), cur: "cny" }, { ...e("2026-08-01", -500000, "House"), cur: "cny" }, e("2026-08-02", -500000, "House")];
   assert.deepEqual(M.recommend(rent, cats, { y: 2026, m: 10 }, "2026-10-16").map((x) => x.c + " " + x.v + " " + x.cur), ["House -500000 cny"]);
+});
+
+test("import: an amount's own sign wins over the category; AUD is a currency", () => {
+  const r = M.fromText("2019-03-02, Food, +20.00, refund\n2019-03-03, Extra, -50.00, paid back\n2017-12-01, Food, -12.50 AUD, pie\n2019-03-04, Salary, +8000.00 CNY\n2019-03-05, Food, 9", M.DEFAULT_CATS);
+  assert.deepEqual(r.rows.map((x) => [x.c, x.v, x.cur || "cad"]), [["Food", 2000, "cad"], ["Extra", -5000, "cad"], ["Food", -1250, "aud"], ["Salary", 800000, "cny"], ["Food", -900, "cad"]]);
+  assert.equal(r.added.length, 0);
+});
+
+test("budgets: pasted lines carry their currency forward; each converts on its own", () => {
+  const r = M.budgetsFromText("Prior 2000 (AUD)\n2018.08 5000 (RMB)\n2020.09 9,100\n2023-09 2720 (cad)\n2026.10 3580\n2021.13 5\nnope", "2017-11");
+  assert.deepEqual(r.list, [{ from: "2017-11", v: 200000, cur: "aud" }, { from: "2018-08", v: 500000, cur: "cny" }, { from: "2020-09", v: 910000, cur: "cny" }, { from: "2023-09", v: 272000 }, { from: "2026-10", v: 358000 }]);
+  assert.equal(r.bad, 2);
+  const R = { cad: 1, cny: 5, aud: 1.25 }, inCad = M.budgetsIn(r.list, "cad", R);
+  assert.equal(M.budgetAt(inCad, 2018, 1), 160000);
+  assert.equal(M.budgetAt(inCad, 2019, 5), 100000);
+  assert.equal(M.budgetAt(M.budgetsIn(r.list, "cny", R), 2019, 5), 500000, "seen in RMB, an RMB budget is untouched");
+  assert.equal(M.budgetAt(inCad, 2026, 11), 358000);
+});
+
+test("budget left as a share: House and Bonds stay out; upcoming records count now and lift the forecast", () => {
+  const cats = M.DEFAULT_CATS, T = "2026-10-10";
+  const e = [{ d: "2026-10-01", v: -150000, c: "House" }, { d: "2026-10-03", v: -20000, c: "Food" }, { d: "2026-10-04", v: -50000, c: "Bonds" }, { d: "2026-10-20", v: -10000, c: "Food" }];
+  const ix = M.index(e, cats), bud = [{ from: "2026-01", v: 250000 }];
+  const cmp = M.compare(ix, bud, { y: 2026, m: 10 }, "month", T);
+  assert.equal(cmp.cur.leftPct, 1 - 30000 / 100000, "food 200 + upcoming 100 out of (2500 − 1500 rent)");
+  assert.equal(cmp.cur.room, 100000);
+  assert.equal(M.metricsOf({ out: 0, inc: 0, base: 0, outside: 0 }, 0).leftPct, null);
+  const c = M.monthChart(ix, bud, 2026, 10, T);
+  assert.equal(c.val(10), 150000 + 20000);
+  assert.equal(Math.round(c.val(20) - c.val(19)), Math.round(10000 + 20000 / 10), "the upcoming 100 lands on the 20th, on top of the usual pace");
 });

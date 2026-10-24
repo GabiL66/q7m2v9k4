@@ -21,7 +21,10 @@ const emit = (meta = {}) => listeners.forEach((fn) => fn(meta));
 export const subscribe = (fn) => listeners.add(fn);
 export const ver = () => version;
 
-export const newId = () => "x" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+// 一笔的 ID：时间 + 这台设备上数到第几笔 + 随机几位。一口气导入几千笔时同一毫秒里有几百笔，
+// 原来只靠 5 位随机字符偶尔会撞上（后一笔把前一笔顶掉，测试里几十次撞一次）；加上计数就不会了
+let seq = 0;
+export const newId = () => "x" + Date.now().toString(36) + (seq++).toString(36) + "-" + Math.random().toString(36).slice(2, 7);
 
 export function entries() {
   if (listVer !== version || !listCache) { listCache = Object.values(S.entries); listVer = version; }
@@ -85,7 +88,7 @@ export function removeMany(ids) {
 }
 
 export function setBudgets(list) {
-  change(() => { S.budgets = list.map((b) => ({ from: b.from, v: Math.round(b.v) })).sort((a, b) => a.from.localeCompare(b.from)); S.bDirty = true; });
+  change(() => { S.budgets = list.map((b) => ({ from: b.from, v: Math.round(b.v), ...(b.cur && b.cur !== "cad" ? { cur: b.cur } : {}) })).sort((a, b) => a.from.localeCompare(b.from)); S.bDirty = true; });
 }
 export function setCats(list) {
   change(() => { S.cats = list.map((c) => ({ name: c.name, kind: c.kind, hidden: Boolean(c.hidden), role: c.role || "" })); S.cDirty = true; });
@@ -102,6 +105,8 @@ export function renameCat(from, to) {
 
 // 表格那张：设了链接才同步
 export function link(on) { if (S.linked !== on) { S.linked = on; if (on) S.wantFull = true; save(); } }
+// 下次同步整份从表格拉（Settings 的「Reload everything from the Sheet」）：本机每一笔照表格里的样子重来一遍，还没发出去的留着
+export function forceFull() { S.wantFull = true; save(); }
 export function wantFull() { if (Date.now() - (S.fullAt || 0) > FULL_EVERY) { S.wantFull = true; save(); return true; } return false; }
 
 // 同步时带上：要写的、要删的、改过的清单；从哪个时间点往后拉
@@ -150,7 +155,10 @@ export function apply(res, sent) {
   }
   for (const id of res.dels || []) if (!S.put[id]) delete S.entries[id];
   // 清单：本机没有没发出去的改动就用表格里的；表格里还是空的（刚建好）就把本机的发过去
-  if (Array.isArray(res.budgets)) { if (!S.bDirty) { if (res.budgets.length || !S.budgets.length) S.budgets = res.budgets; else S.bDirty = true; } }
+  // 旧的 Code.gs 回来的预算不带币种（没有 bcur）：本机记着的那个留着
+  const bcur = Object.fromEntries(S.budgets.filter((b) => b.cur).map((b) => [b.from, b.cur]));
+  if (Array.isArray(res.budgets)) { if (!S.bDirty) { if (res.budgets.length || !S.budgets.length) S.budgets = res.bcur ? res.budgets : res.budgets.map((b) => (bcur[b.from] ? { ...b, cur: bcur[b.from] } : b)); else S.bDirty = true; } }
+  if (!res.bcur && S.budgets.some((b) => b.cur)) S.error = "Update Code.gs in your 苦昼短 Sheet to sync budget currencies";
   if (Array.isArray(res.cats)) { if (!S.cDirty) { if (res.cats.length) S.cats = res.cats; else S.cDirty = true; } }
   S.cursor = res.now || Date.now();
   if (full) { S.fullAt = Date.now(); S.wantFull = false; }

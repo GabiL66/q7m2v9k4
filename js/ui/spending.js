@@ -5,7 +5,7 @@
 //   左边：图表（梯形图，鼠标移上去看每天的读数）→ 流水表（月 = 按天分组；年、搜索 = 按月分组，多一列日期；金额靠右、等宽；
 //     鼠标移到一行出 Edit / ×，点一行就在原地改）
 //   + Add（按 N）：页头下面展开一行直接打字（不用滚到流水那里）：Tab 跳格、回车存（存完这一行就收起来，要接着记再按 N）、Esc 或点到外面（还没打字的话）收起；
-//     底下一排推荐，点了直接记上
+//     底下一排推荐，点了直接记上。类别那个下拉分两组 Expense / Income：选了收入那组的就是收入（左边 − 跟着变 +）；点 − / + 也能换过去
 //   右边（贴着顶）：By category，Expense / Income；每类一行：名字、金额、占比，底下一条按金额长的细线；点一类 = 流水只看这一类，再点取消
 //   齿轮：苦昼短自己的弹窗（Budget | Categories | Currency | Export | Import），功能和手机上的一样
 //   币种：每一笔是记的那种钱（金额那一格照原样写，换算过的小字在下面）；页头的 CAD ▾ = 总数换成哪种看（这台电脑自己的）；记一笔那一行金额后面能换币种，换了就一直用它
@@ -33,16 +33,18 @@ export function createSpending() {
   const root = document.createElement("div");
   root.className = "mn spend";
   root.innerHTML =
-    '<header class="sp-head"><div class="sp-title"><h2 data-title></h2><p class="sp-status" data-status></p></div>' +
+    // 翻页的箭头夹着标题（一眼看到现在翻到哪）；不在当前这一期时，标题后面多一颗青柠小圆点 = 回到现在
+    '<header class="sp-head"><div class="sp-title"><div class="sp-tnav"><button type="button" class="sp-nb" data-act="prev" aria-label="Earlier" title="Earlier">‹</button><h2 data-title></h2>' +
+    '<button type="button" class="sp-nb" data-act="next" aria-label="Later" title="Later">›</button><button type="button" class="sp-nb sp-now" data-act="now" aria-label="Back to now" title="Back to now" hidden><i></i></button></div><p class="sp-status" data-status></p></div>' +
     '<div class="sp-tools">' + seg("mode", [["month", "Month"], ["year", "Year"]]) +
-    '<div class="sp-nav"><button type="button" class="sp-nb" data-act="prev" aria-label="Earlier" title="Earlier">‹</button><button type="button" class="sp-nb" data-act="now">Now</button><button type="button" class="sp-nb" data-act="next" aria-label="Later" title="Later">›</button></div>' +
     '<label class="sp-find">' + icon("search") + '<input type="search" data-q placeholder="Search" aria-label="Search notes, categories, amounts" autocomplete="off"><kbd>/</kbd></label>' +
     '<select class="sp-curs" data-show aria-label="Show totals in" title="Show totals in">' + M.CURS.map((c) => '<option value="' + c.k + '">' + c.code + "</option>").join("") + "</select>" +
     '<button type="button" class="sp-ic" data-act="set" aria-label="Spending settings" title="Settings">' + icon("settings") + "</button>" +
     '<button type="button" class="sp-add" data-act="add" title="Add a transaction (N)">' + icon("plus") + "Add<kbd>N</kbd></button></div></header>" +
     '<div class="sp-addw" data-add></div>' +
-    '<section class="sp-kpis" data-kpis aria-label="This period at a glance">' + [["out", "Spent"], ["inc", "Income"], ["bal", "Balance"], ["used", "Budget used"], ["left", "Budget left"]].map(([k, l]) =>
-      '<div class="sp-kpi" data-k="' + k + '"><span class="sp-kl">' + l + '</span><span class="sp-kv mn-num mn-rn"></span><div class="sp-kb"></div><span class="sp-ks mn-num"></span></div>').join("") + "</section>" +
+    '<section class="sp-kpis" data-kpis aria-label="This period at a glance">' + [["out", "Spent"], ["inc", "Income"], ["bal", "Balance"], ["left", "Budget left"]].map(([k, l]) =>
+      // 线和点只建一次：换期时点从原处弹簧滑到新位置（重画就没有过渡了）
+      '<div class="sp-kpi" data-k="' + k + '"><span class="sp-kl">' + l + '</span><span class="sp-kvw"><span class="sp-kv mn-num mn-rn"></span><span class="sp-kp mn-num mn-rn"></span></span><div class="sp-kb"><div class="mn-track mn-range"><b hidden></b></div></div><span class="sp-ks mn-num"></span></div>').join("") + "</section>" +
     '<div class="sp-body"><div class="sp-main">' +
     '<figure class="sp-chart"><figcaption><div><h3 data-ctitle></h3><p class="sp-lede" data-pace></p></div><div class="sp-legend" data-legend aria-hidden="true"></div></figcaption>' +
     '<svg class="mn-chart" data-chart role="img" aria-label="Spending against the budget"></svg></figure>' +
@@ -52,9 +54,10 @@ export function createSpending() {
 
   const $ = (s) => root.querySelector(s);
   // mode：Month / Year；cur：看的是哪一期；filt：右边点了的那一类；side：右边看支出还是收入；q：搜索；edit：正在改的那一笔（"new" = 新记一笔）
-  const V = { mode: "month", cur: todayP(), filt: null, side: "out", q: "", edit: null, all: false };
+  const V = { mode: "month", cur: todayP(), filt: null, side: "out", q: "", edit: null, all: false, nohouse: false };   // nohouse：图只看 House 以外
   const F = { kind: "out", cat: "", d: today(), v: "", n: "", cur: "cad" };   // 正在填的那一行（页面重画时先读回来，填到一半不丢）
-  const chart = chartView($("[data-chart]"));
+  // 图表：点 House 上面那块 = 只看 House 以外（花销和预算都不含 House）；只看的时候点哪儿都回来。每次进这一页都是完整的（show）
+  const chart = chartView($("[data-chart]"), { onTap: (where) => { V.nohouse = where === "rest"; renderChart(false); } });
   let shown = false, fresh = null;
 
   // ---------- 分段开关：选中的那块滑过去 ----------
@@ -77,7 +80,7 @@ export function createSpending() {
     $("[data-title]").textContent = periodTitle(V.cur, V.mode);
     $("[data-show]").value = SP.show();
     segTo("mode", V.mode);
-    $('[data-act="now"]').disabled = M.samePeriod(V.cur, todayP(), V.mode);
+    $('[data-act="now"]').hidden = M.samePeriod(V.cur, todayP(), V.mode);
     const [st, bad] = statusText(), el = $("[data-status]");
     el.textContent = st;
     el.classList.toggle("bad", bad);
@@ -86,40 +89,55 @@ export function createSpending() {
   // ---------- 一排数 ----------
   function renderKpis(c) {
     const p = V.cur, mode = V.mode, cmp = M.compare(IX(), budgetsShown(), p, mode, today());
-    const g = c.used, B = c.B, u = B ? M.counted(g) / B : 0, bal = cmp.cur.balance, left = cmp.cur.left;
+    const g = c.used, B = c.B, bal = cmp.cur.balance, pct = cmp.cur.leftPct;
     const since = (mode === "year" ? "earlier years" : "the last six months") + (cmp.cutText ? ", " + cmp.cutText : "");
-    const range = (key, worse) => {
-      const r = cmp.range[key], v = cmp.cur[key];
-      if (!r) return { bar: '<div class="mn-track"></div>', small: mode === "year" ? "No earlier years yet" : "No history yet" };
-      const span = r[1] - r[0], pos = span ? (v - r[0]) / span : 0.5, bad = worse === "high" ? v > r[1] : v < r[0];
-      return { bar: '<div class="mn-track mn-range" title="' + esc("Lowest to highest over " + since) + '"><b style="left:' + (Math.max(0, Math.min(1, pos)) * 100).toFixed(1) + '%"' + (bad ? ' class="over"' : "") + "></b></div>", small: "Usually " + kfmt(r[0]) + "–" + kfmt(r[1]) };
-    };
-    const cell = (k, value, { color = "", money = true, bar, small }) => {
-      const el = root.querySelector('[data-k="' + k + '"]'), v = el.querySelector(".sp-kv");
+    const pctText = (x) => Math.round(x * 100) + "%";
+    // 范围线：之前六个月（年 = 往年）最低到最高，点 = 这一期落在哪儿。橙色只标超了预算的（她 10-22 说的）：
+    // Budget left 是负的时候那个数和 Budget left、Spent 的点；结余是负的、比平时花得多都不标
+    const blown = pct !== null && pct < 0;
+    // extra = 跟在数后面的那一截（Budget left 的「· 69%」），一样滚着变
+    const cell = (k, value, { color = "", money = true, key, fmt = kfmt, small = "", extra = "" }) => {
+      const el = root.querySelector('[data-k="' + k + '"]'), v = el.querySelector(".sp-kv"), kp = el.querySelector(".sp-kp"), tr = el.querySelector(".mn-track"), dot = tr.querySelector("b");
       roll(v, value, money);
-      v.style.color = color;
-      el.querySelector(".sp-kb").innerHTML = bar;
-      el.querySelector(".sp-ks").textContent = small;
+      if (extra) roll(kp, extra);
+      else { kp.textContent = ""; delete kp.dataset.v; }
+      v.style.color = kp.style.color = color;
+      const r = key && cmp.range[key], x = cmp.cur[key];
+      if (!r || x === null || x === undefined) {
+        dot.hidden = true;
+        tr.title = "";
+        el.querySelector(".sp-ks").textContent = small || (mode === "year" ? "No earlier years yet" : "No history yet");
+        return;
+      }
+      const span = r[1] - r[0], pos = span ? (x - r[0]) / span : 0.5;
+      dot.hidden = false;
+      dot.classList.toggle("over", blown && (k === "left" || k === "out"));
+      dot.style.left = (Math.max(0, Math.min(1, pos)) * 100).toFixed(1) + "%";
+      tr.title = "Lowest to highest over " + since;
+      el.querySelector(".sp-ks").textContent = (small ? small + " · " : "") + "usually " + fmt(r[0]) + "–" + fmt(r[1]);
     };
-    cell("out", "−" + M.money(g.out), range("expense", "high"));
-    cell("inc", "+" + M.money(g.inc), { color: "var(--mn-green)", ...range("income", "low") });
-    cell("bal", (bal < 0 ? "−" : "+") + M.money(bal), { color: bal < 0 ? "var(--mn-orange)" : "", ...range("balance", "low") });
-    cell("used", B ? (u * 100).toFixed(1) + "%" : "—", { money: false, bar: '<div class="mn-track"><i style="width:' + Math.min(100, u * 100).toFixed(1) + '%"' + (u > 1 ? ' class="over"' : "") + "></i></div>", small: B ? "of " + M.money(B) : "No budget yet" });
-    cell("left", B ? (left < 0 ? "−" : "+") + M.money(left) : "—", { money: Boolean(B), color: B && left < 0 ? "var(--mn-orange)" : "", ...range("left", "low") });
+    cell("out", "−" + M.money(g.out), { key: "expense" });
+    cell("inc", "+" + M.money(g.inc), { color: "var(--mn-green)", key: "income" });
+    cell("bal", (bal < 0 ? "−" : "+") + M.money(bal), { key: "balance" });
+    // 预算还剩多少钱 · 几成（她 10-22 要的）：不算 House（底座）和 Bonds；提前记的未来那几笔也算在里面。小字 = 一共能花多少（预算 − House）
+    const left = cmp.cur.left;
+    cell("left", pct === null ? "—" : (left < 0 ? "−" : "") + M.money(Math.abs(left)), { money: pct !== null, color: blown ? "var(--mn-orange)" : "", key: "leftPct", fmt: pctText,
+      extra: pct === null ? "" : (pct < 0 ? "−" : "") + pctText(Math.abs(pct)), small: pct === null ? (B ? "Budget is all base" : "No budget yet") : "of " + kfmt(cmp.cur.room) });
   }
 
   // ---------- 图表 ----------
   function renderChart(animate) {
     const svg = $("[data-chart]"), W = Math.max(320, Math.round(svg.clientWidth || 640)), H = Math.round(Math.max(200, Math.min(300, W * 0.34)));
-    const c = chart.draw({ mode: V.mode, p: V.cur, w: W, h: H, animate });
+    const c = chart.draw({ mode: V.mode, p: V.cur, w: W, h: H, animate, house: !V.nohouse });
     const name = V.mode === "month" ? M.MONTH[V.cur.m - 1] : String(V.cur.y), end = V.mode === "month" ? M.MON[V.cur.m - 1] + " " + c.n : "Dec 31";
-    $("[data-ctitle]").textContent = "Spending in " + name;
+    const baseNames = SP.cats().filter((x) => x.role === "base").map((x) => x.name).join(", ") || "House";
+    $("[data-ctitle]").textContent = "Spending in " + name + (V.nohouse ? " · without " + baseNames : "");
     const sofar = c.last ? c.val(c.last) : 0, budget = c.B ? " of a <b>" + esc(M.money(c.B)) + "</b> budget" : "";
     $("[data-pace]").innerHTML = !c.last ? "Nothing spent yet" + (c.B ? " · budget <b>" + esc(M.money(c.B)) + "</b>" : "")
       : c.isCur && c.last < c.n ? "<b>" + esc(M.money(sofar)) + "</b> so far; at this pace <b>" + esc(M.money(c.val(c.n))) + "</b> by " + end + budget
         : "<b>" + esc(M.money(sofar)) + "</b> in all" + budget;
     const base = SP.cats().filter((x) => x.role === "base").map((x) => x.name).join(", ") || "Base";
-    $("[data-legend]").innerHTML = '<span><i class="ln"></i>Spent</span>' + (c.isCur ? '<span><i class="tr"></i>Trend</span>' : "") + (c.B ? '<span><i class="bd"></i>Budget</span>' : "") + '<span><i class="hs"></i>' + esc(base) + "</span>";
+    $("[data-legend]").innerHTML = '<span><i class="ln"></i>Spent</span>' + (c.isCur ? '<span><i class="tr"></i>Trend</span>' : "") + (c.B ? '<span><i class="bd"></i>Budget</span>' : "") + (V.nohouse ? '<span class="sp-back">Click the chart to show everything</span>' : '<span><i class="hs"></i>' + esc(base) + "</span>");
     return c;
   }
 
@@ -147,15 +165,18 @@ export function createSpending() {
     const label = d === t ? "Today" : d === M.addDaysISO(t, -1) ? "Yesterday" : WD[new Date(Date.UTC(p.y, p.m - 1, p.d)).getUTCDay()];
     return label + ", " + M.MON[p.m - 1] + " " + p.d + (p.y !== todayP().y ? ", " + p.y : "");
   };
+  const RECENT = 20;
   function txRows() {
     const q = V.q.trim().toLowerCase();
+    // Recent：最近记 / 改过的那几笔，不管哪一期（改动时间新的在前）
+    if (V.recent && !q) return SP.entries().slice().sort((a, b) => (b.u || 0) - (a.u || 0)).slice(0, RECENT);
     if (q) return SP.entries().filter((e) => (e.c + " " + e.n + " " + (Math.abs(e.v) / 100).toFixed(2) + " " + M.money(e.v, M.curOf(e)) + " " + curLabel(M.curOf(e))).toLowerCase().includes(q)).sort(M.byNewest);
     return SP.entries().filter((e) => M.inPeriod(e, V.cur, V.mode) && (!V.filt || e.c === V.filt)).sort(M.byNewest);
   }
   const amountHTML = (e) => (e.v > 0 ? "+" : "−") + cents(M.money(e.v, M.curOf(e))) + (convOf(e) ? '<small class="sp-conv">' + esc(convOf(e)) + "</small>" : "");
   const rowHTML = (e, dated) => '<tr class="sp-row' + (e.id === fresh ? " new" : "") + '" data-id="' + esc(e.id) + '" tabindex="0" aria-label="' + esc(e.c + " " + amtOf(e) + (e.n ? ", " + e.n : "") + ", " + M.fmtDate(e.d) + " — press Enter to edit") + '">' +
-    (dated ? '<td class="d mn-num">' + M.MON[M.parts(e.d).m - 1] + " " + M.parts(e.d).d + "</td>" : "") +
-    '<td class="c">' + esc(e.c) + '</td><td class="n" title="' + esc(e.n || "") + '">' + esc(e.n || "") + "</td>" +
+    (dated ? '<td class="d mn-num">' + M.MON[M.parts(e.d).m - 1] + " " + M.parts(e.d).d + (M.parts(e.d).y !== todayP().y ? ", " + M.parts(e.d).y : "") + "</td>" : "") +
+    '<td class="c">' + esc(e.c) + (e.d > today() ? ' <span class="sp-up" title="Dated ' + esc(M.fmtDate(e.d)) + ' — already counted">upcoming</span>' : "") + '</td><td class="n" title="' + esc(e.n || "") + '">' + esc(e.n || "") + "</td>" +
     '<td class="r mn-num' + (e.v > 0 ? " in" : "") + '">' + amountHTML(e) + "</td>" +
     '<td class="a"><button type="button" class="sp-ra" data-act="edit" tabindex="-1">Edit</button><button type="button" class="sp-ra x" data-act="del" tabindex="-1" aria-label="Delete" title="Delete">×</button></td></tr>';
 
@@ -172,17 +193,20 @@ export function createSpending() {
     return list;
   }
   const firstCat = (kind) => { const l = visible(kind); return kind === "out" ? (l.includes("Food") ? "Food" : l[Math.min(1, l.length - 1)] || "") : l[0] || ""; };
+  const signHTML = () => '<button type="button" class="sp-sign' + (F.kind === "in" ? " in" : "") + '" data-act="sign" aria-label="' + (F.kind === "in" ? "Income — switch to an expense" : "Expense — switch to income") + '" title="' + (F.kind === "in" ? "Income" : "Expense") + ' — click to switch">' + (F.kind === "in" ? "+" : "−") + "</button>";
   function formInner(e) {
     const cats = catsFor(F.kind, e);
     if (!cats.includes(F.cat)) F.cat = cats.includes(firstCat(F.kind)) ? firstCat(F.kind) : cats[0] || "";
+    // 下拉里两组都列上：收入不用先找到左边那格才看得见
+    const groups = [["out", "Expense"], ["in", "Income"]].map(([k, l]) => [k, l, k === F.kind ? cats : catsFor(k, e)]).filter((g) => g[2].length);
     const used = M.notesOf(SP.entries(), F.cat), t = todayP();
     const view = V.mode === "year" ? (V.cur.y === t.y ? { y: t.y, m: t.m } : null) : { y: V.cur.y, m: V.cur.m };
     const recs = e ? [] : M.recommend(SP.entries(), SP.cats(), view, today());
     return '<div class="sp-fl">' +
-      '<button type="button" class="sp-sign' + (F.kind === "in" ? " in" : "") + '" data-act="sign" aria-label="' + (F.kind === "in" ? "Income — switch to an expense" : "Expense — switch to income") + '" title="Expense or income">' + (F.kind === "in" ? "+" : "−") + "</button>" +
+      signHTML() +
       '<input class="sp-fi sp-f-amt mn-num" data-f="v" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(F.v) + '" aria-label="Amount (12.50+8 adds up)" title="12.50+8 adds up">' +
       '<select class="sp-fi sp-f-cur" data-f="cur" aria-label="Currency" title="Currency — new records keep using the one you pick">' + M.CURS.map((c) => '<option value="' + c.k + '"' + (c.k === F.cur ? " selected" : "") + ">" + c.code + "</option>").join("") + "</select>" +
-      '<select class="sp-fi sp-f-cat" data-f="c" aria-label="Category">' + cats.map((c) => "<option" + (c === F.cat ? " selected" : "") + ">" + esc(c) + "</option>").join("") + "</select>" +
+      '<select class="sp-fi sp-f-cat" data-f="c" aria-label="Category">' + groups.map(([k, l, list]) => '<optgroup label="' + l + '">' + list.map((c) => '<option value="' + esc(c) + '" data-k="' + k + '"' + (k === F.kind && c === F.cat ? " selected" : "") + ">" + esc(c) + "</option>").join("") + "</optgroup>").join("") + "</select>" +
       '<input class="sp-fi sp-f-note" data-f="n" autocomplete="off" placeholder="' + esc(used[0] ? "e.g. " + used[0] : "Note") + '" value="' + esc(F.n) + '" aria-label="Note">' +
       '<input class="sp-fi sp-f-date" type="date" data-f="d" value="' + esc(F.d) + '" aria-label="Date">' +
       '<span class="sp-fb">' + (e ? '<button type="button" class="sp-link warn" data-act="fdel">Delete</button>' : "") + '<button type="button" class="sp-link" data-act="cancel">Cancel</button>' +
@@ -203,17 +227,21 @@ export function createSpending() {
     if (!f) return;
     const val = (k) => f.querySelector('[data-f="' + k + '"]')?.value ?? "";
     Object.assign(F, { v: val("v"), cat: val("c") || F.cat, n: val("n"), d: val("d") || F.d, cur: val("cur") || F.cur });
+    const k = f.querySelector('[data-f="c"]')?.selectedOptions[0]?.dataset.k;   // 是支出还是收入，照选中的那个类别在哪一组
+    if (k) F.kind = k;
   }
   function renderTable() {
     readForm();
-    const q = V.q.trim(), rows = txRows(), dated = Boolean(q) || V.mode === "year";
+    const q = V.q.trim(), rows = txRows(), recent = V.recent && !q, dated = Boolean(q) || V.mode === "year" || recent;
     const shown = V.all ? rows : rows.slice(0, CAP), cols = dated ? 5 : 4;
     const groups = new Map();
     for (const e of shown) { const k = dated ? e.d.slice(0, 7) : e.d; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(e); }
     const editing = V.edit && V.edit !== "new" ? SP.get(V.edit) : null;   // 新记的那一行在页头下面（renderAdd），这里只有原地改的
     let body = "";
     const R = RATES(), show = SP.show(), inShow = (e) => M.convert(e.v, M.curOf(e), show, R);
-    for (const [k, list] of groups) {
+    if (recent) body = '<tbody><tr class="sp-grp"><th colspan="' + cols + '" scope="rowgroup">Recently added or changed <small>newest first</small></th></tr>' +
+      shown.map((e) => (editing && e.id === editing.id ? formRow(cols, e) : rowHTML(e, true))).join("") + "</tbody>";
+    else for (const [k, list] of groups) {
       const out = list.reduce((s, e) => s + (e.v < 0 ? -inShow(e) : 0), 0), inc = list.reduce((s, e) => s + (e.v > 0 ? inShow(e) : 0), 0);
       const title = dated ? M.MONTH[Number(k.slice(5, 7)) - 1] + " " + k.slice(0, 4) : dayTitle(k);
       body += '<tbody><tr class="sp-grp"><th colspan="' + (cols - 2) + '" scope="rowgroup">' + esc(title) + " <small>" + list.length + "</small></th>" +
@@ -226,8 +254,8 @@ export function createSpending() {
       body + empty + "</table>" +
       (rows.length > shown.length ? '<button type="button" class="sp-more" data-act="all">Show all ' + rows.length + "</button>" : "");
     $("[data-count]").textContent = rows.length ? String(rows.length) : "";
-    $("[data-pills]").innerHTML = (q ? '<button type="button" class="sp-pill" data-act="unq" title="Clear the search">Search: ' + esc(q) + " <span aria-hidden=\"true\">×</span></button>" : "") +
-      (V.filt && !q ? '<button type="button" class="sp-pill" data-act="unfilt" title="Show every category">' + esc(V.filt) + ' <span aria-hidden="true">×</span></button>' : "");
+    $("[data-pills]").innerHTML = (!q ? '<button type="button" class="sp-pill' + (V.recent ? " on" : "") + '" data-act="recent" aria-pressed="' + Boolean(V.recent) + '" title="' + (V.recent ? "Back to " + esc(periodTitle(V.cur, V.mode)) : "The last " + RECENT + " you added or changed") + '">Recent</button>' : "") + (q ? '<button type="button" class="sp-pill" data-act="unq" title="Clear the search">Search: ' + esc(q) + " <span aria-hidden=\"true\">×</span></button>" : "") +
+      (V.filt && !q && !V.recent ? '<button type="button" class="sp-pill" data-act="unfilt" title="Show every category">' + esc(V.filt) + ' <span aria-hidden="true">×</span></button>' : "");
     fresh = null;
   }
 
@@ -272,7 +300,7 @@ export function createSpending() {
     readForm();
     const s = sumOfAmount(F.v), err = $("[data-ferr]");
     if (!(s > 0)) { if (err) err.textContent = "Type an amount first"; focusAmount(); return; }
-    if (!F.cat) { if (err) err.textContent = "Add a category in Settings first"; return; }
+    if (!F.cat) { if (err) err.textContent = "Add " + (F.kind === "in" ? "an income" : "a") + " category in Settings first"; return; }
     if (!/^\d{4}-\d\d-\d\d$/.test(F.d)) { if (err) err.textContent = "Pick a date"; return; }
     const v = Math.round(s * 100) * (F.kind === "out" ? -1 : 1), row = { d: F.d, v, c: F.cat, n: F.n.trim(), cur: F.cur }, id = V.edit;
     if (id && id !== "new") {
@@ -310,7 +338,7 @@ export function createSpending() {
     if (V.mode === "month") ({ y, m } = M.addMonths(y, m, k)); else y += k;
     if (y < 2000 || y > todayP().y + 5) return;
     V.cur = { y, m, d: 1 };
-    V.filt = null; V.all = false; V.edit = null;
+    V.filt = null; V.all = false; V.edit = null; V.recent = false;
     render(true);
     if (!quiet()) $("[data-title]").animate([{ transform: "translateX(" + k * 10 + "px)", opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 280, easing: "cubic-bezier(.16, 1, .3, 1)" });
   }
@@ -356,7 +384,8 @@ export function createSpending() {
     const act = a.dataset.act, rowId = a.closest("[data-id]")?.dataset.id;
     if (act === "prev") shift(-1);
     else if (act === "next") shift(1);
-    else if (act === "now") { V.cur = todayP(); V.filt = null; V.all = false; V.edit = null; render(true); }
+    else if (act === "now") { V.cur = todayP(); V.filt = null; V.all = false; V.edit = null; V.recent = false; render(true); }
+    else if (act === "recent") { V.recent = !V.recent; V.all = false; V.edit = null; renderTable(); }
     else if (act === "add") startNew();
     else if (act === "set") openSettings();
     else if (act === "edit" && rowId) startEdit(rowId);
@@ -387,6 +416,9 @@ export function createSpending() {
     if (e.target.matches('.sp-form [data-f="cur"]')) { F.cur = e.target.value; if (V.edit === "new") SP.setInCur(F.cur); wantRate(F.cur); return; }
     if (!e.target.matches('.sp-form [data-f="c"]')) return;
     F.cat = e.target.value;
+    // 选了另一组的类别：支出 / 收入跟着换，只换左边那格（打了的数、备注不动）
+    const k = e.target.selectedOptions[0]?.dataset.k, sign = $(".sp-form .sp-sign");
+    if (k && k !== F.kind) { F.kind = k; if (sign) sign.outerHTML = signHTML(); }
     const used = M.notesOf(SP.entries(), F.cat), note = $('.sp-form [data-f="n"]');
     if (note) note.placeholder = used[0] ? "e.g. " + used[0] : "Note";
   });
@@ -405,15 +437,18 @@ export function createSpending() {
   function setBody() {
     const t = todayP();
     if (SET.tab === "budget") {
-      const pts = SP.budgets().slice().reverse();
-      const months = Array.from({ length: 30 }, (_, i) => M.addMonths(t.y, t.m, 6 - i));
-      return '<p class="msub">Each month uses the latest budget set on or before it. Base categories (like House) are the bottom of the trapezoid; ones marked “not in budget” don\'t count against it.</p>' +
-        (pts.length ? '<table class="mtable"><thead><tr><th>From</th><th class="r">Per month</th><th></th></tr></thead><tbody>' + pts.map((x) => {
+      // 每个预算按当时用的那种钱记（澳洲那两年澳币、国内人民币、现在加币）；从哪个月起：年、月分开选，最早 2000 年
+      const pts = SP.budgets().slice().reverse(), curSel = (attr, k) => '<select ' + attr + ' aria-label="Currency">' + M.CURS.map((c) => '<option value="' + c.k + '"' + (c.k === k ? " selected" : "") + ">" + c.code + "</option>").join("") + "</select>";
+      const last = pts[0], years = Array.from({ length: t.y + 2 - 2000 }, (_, i) => t.y + 1 - i);
+      return '<p class="msub">Each month uses the latest budget set on or before it, in the currency you lived on then. Base categories (like House) are the bottom of the trapezoid; ones marked “not in budget” don\'t count against it.</p>' +
+        '<div class="sp-setrow"><label>From <select data-nby aria-label="Year">' + years.map((y) => '<option' + (y === t.y ? " selected" : "") + ">" + y + "</option>").join("") + '</select></label><select data-nbmo aria-label="Month">' + M.MONTH.map((n, i) => '<option value="' + (i + 1) + '"' + (i + 1 === t.m ? " selected" : "") + ">" + n + "</option>").join("") + "</select>" +
+        '<input class="num sp-bv" data-nbv inputmode="decimal" placeholder="3580.00" aria-label="Amount a month">' + curSel("data-nbc", last?.cur || "cad") + '<button type="button" class="btn" data-sact="nbs">Set budget</button></div>' +
+        '<details class="sp-paste"><summary>Paste several</summary><p class="msub">One per line: month, amount, and the currency when it changes — it carries on to the lines below. “Prior” is the one before all others.</p>' +
+        '<textarea data-bpaste rows="6" spellcheck="false" placeholder="Prior 2000 (AUD)&#10;2018.08 5000 (RMB)&#10;2020.09 9100&#10;2023.09 2720 (CAD)"></textarea><div class="sp-setrow"><button type="button" class="btn" data-sact="bpaste">Add these</button><span class="msub" data-bpr></span></div></details>' +
+        (pts.length ? '<table class="mtable"><thead><tr><th>From</th><th class="r">Per month</th><th></th><th></th></tr></thead><tbody>' + pts.map((x) => {
           const p = M.parts(x.from + "-01");
-          return "<tr><td>" + M.MONTH[p.m - 1] + " " + p.y + '</td><td class="r"><input class="num sp-bv" data-bpv="' + x.from + '" value="' + (x.v / 100).toFixed(2) + '" inputmode="decimal" aria-label="Budget from ' + M.MONTH[p.m - 1] + " " + p.y + '"></td><td class="r"><button type="button" class="link" data-sact="bprm" data-from="' + x.from + '">Remove</button></td></tr>';
-        }).join("") + "</tbody></table>" : '<p class="msub">No budget yet.</p>') +
-        '<div class="sp-setrow"><label>From <select data-nbm>' + months.map((q) => '<option value="' + M.ym(q.y, q.m) + '"' + (q.y === t.y && q.m === t.m ? " selected" : "") + ">" + M.MONTH[q.m - 1] + " " + q.y + "</option>").join("") + "</select></label>" +
-        '<label>$ <input class="num sp-bv" data-nbv inputmode="decimal" placeholder="3580.00" aria-label="Amount a month"></label><button type="button" class="btn" data-sact="nbs">Set budget</button></div>';
+          return "<tr><td>" + M.MONTH[p.m - 1] + " " + p.y + '</td><td class="r"><input class="num sp-bv" data-bpv="' + x.from + '" value="' + (x.v / 100).toFixed(2) + '" inputmode="decimal" aria-label="Budget from ' + M.MONTH[p.m - 1] + " " + p.y + '"></td><td>' + curSel('data-bcur="' + x.from + '"', x.cur || "cad") + '</td><td class="r"><button type="button" class="link" data-sact="bprm" data-from="' + x.from + '">Remove</button></td></tr>';
+        }).join("") + "</tbody></table>" : '<p class="msub">No budget yet.</p>');
     }
     if (SET.tab === "cats") {
       const all = SP.cats(), mine = all.filter((c) => c.kind === SET.catKind), cnt = new Map();
@@ -477,11 +512,23 @@ export function createSpending() {
       else if (act === "catk") { SET.catKind = b.dataset.v; renderSet(); }
       else if (act === "bprm") { const before = SP.budgets(); SP.setBudgets(before.filter((x) => x.from !== b.dataset.from)); renderSet(); toast("Budget removed", () => { SP.setBudgets(before); renderSet(); }); }
       else if (act === "nbs") {
-        const v = M.toCents(sheet.querySelector("[data-nbv]").value), from = sheet.querySelector("[data-nbm]").value;
+        const q = (s) => sheet.querySelector(s).value, v = M.toCents(q("[data-nbv]")), from = M.ym(+q("[data-nby]"), +q("[data-nbmo]")), cur = q("[data-nbc]");
         if (!(v > 0)) { sheet.querySelector("[data-nbv]").focus(); return; }
-        SP.setBudgets([...SP.budgets().filter((x) => x.from !== from), { from, v }].sort((a, c) => a.from.localeCompare(c.from)));
+        SP.setBudgets([...SP.budgets().filter((x) => x.from !== from), { from, v, cur }]);
         renderSet();
         toast("Budget saved");
+      }
+      else if (act === "bpaste") {
+        // Prior = 最早那一笔账的那个月（还没有账就 2000 年 1 月）
+        const first = SP.entries().reduce((m, e) => (e.d < m ? e.d : m), "9999"), prior = first < "9999" ? first.slice(0, 7) : "2000-01";
+        const r = M.budgetsFromText(sheet.querySelector("[data-bpaste]").value, prior), before = SP.budgets();
+        if (r.list.length) {
+          const by = new Map(before.map((x) => [x.from, x]));
+          for (const x of r.list) by.set(x.from, x);
+          SP.setBudgets([...by.values()]);
+          renderSet();
+          toast("Added " + r.list.length + (r.list.length === 1 ? " budget" : " budgets") + (r.bad ? " · " + r.bad + " line" + (r.bad === 1 ? "" : "s") + " skipped" : ""), () => { SP.setBudgets(before); renderSet(); });
+        } else sheet.querySelector("[data-bpr]").textContent = "Nothing to add — check the lines";
       }
       else if (act === "hide") { SP.setCats(SP.cats().map((c) => (c.name === b.dataset.c ? { ...c, hidden: !c.hidden } : c))); renderSet(); }
       else if (act === "cdel") { const before = SP.cats(); SP.setCats(before.filter((c) => c.name !== b.dataset.c)); renderSet(); toast("Deleted " + b.dataset.c, () => { SP.setCats(before); renderSet(); }); }
@@ -511,6 +558,8 @@ export function createSpending() {
       if (t.matches("[data-bpv]")) {
         const v = M.toCents(t.value);
         if (v > 0) { SP.setBudgets(SP.budgets().map((x) => (x.from === t.dataset.bpv ? { ...x, v } : x))); toast("Budget saved"); }
+      } else if (t.matches("[data-bcur]")) {
+        SP.setBudgets(SP.budgets().map((x) => (x.from === t.dataset.bcur ? { ...x, cur: t.value } : x))); toast("Budget saved");
       } else if (t.matches("[data-rn]")) {
         const from = t.dataset.rn, to = t.value.trim();
         if (!to || SP.cats().some((c) => c.name.toLowerCase() === to.toLowerCase() && c.name !== from)) { t.value = from; return; }
@@ -560,6 +609,7 @@ export function createSpending() {
   // 每次进 Spending 页：数从头滚、图表画一遍
   function show() {
     shown = true;
+    V.nohouse = false;   // 每次进来图都是完整的（包括 House）
     requestAnimationFrame(() => { lastW = root.clientWidth; render(true); });
   }
   const focusSearch = () => { const q = $("[data-q]"); q.focus(); q.select(); };

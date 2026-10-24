@@ -163,3 +163,71 @@ test("spend: an old Code.gs (no currencies yet) keeps the RMB record queued and 
   assert.deepEqual(phone.request().put, []);
   assert.equal(phone.get(a.id).cur, "cny");
 });
+
+test("spend: thousands of imported records go to the sheet in one write, signs and currencies kept", async () => {
+  const { book, sync } = sheet();
+  const phone = await device(), mac = await device();
+  const tx = book.getSheetByName("Transactions") || null;
+  phone.addMany(Array.from({ length: 3000 }, (_, i) => ({ d: "2019-0" + (1 + (i % 9)) + "-1" + (i % 10), v: i % 7 ? -(100 + i) : 5000, c: i % 7 ? "Food" : "Gift", ...(i % 3 ? { cur: "aud" } : {}) })));
+  const t0 = Date.now();
+  sync(phone);
+  assert.ok(Date.now() - t0 < 20000);
+  const rows = book.getSheetByName("Transactions").objects();
+  assert.equal(rows.length, 3000);
+  assert.equal(rows.filter((r) => r.Currency === "AUD").length, 2000);
+  assert.equal(rows.filter((r) => r.Kind === "Income" && r.Category === "Gift").length, 429, "a positive Gift stays money in");
+  sync(mac);
+  assert.equal(mac.entries().length, 3000);
+  assert.equal(mac.entries().filter((e) => e.cur === "aud").length, 2000);
+  void tx;
+});
+
+test("spend: budgets keep the currency they were set in, on the sheet and the other device", async () => {
+  const { book, sync } = sheet();
+  const phone = await device(), mac = await device();
+  phone.setBudgets([{ from: "2017-11", v: 200000, cur: "aud" }, { from: "2018-08", v: 500000, cur: "cny" }, { from: "2023-09", v: 272000 }]);
+  sync(phone);
+  assert.deepEqual(book.getSheetByName("Budgets").objects().map((r) => [r.From, r.Amount, r.Currency]), [["2017-11", 2000, "AUD"], ["2018-08", 5000, "RMB"], ["2023-09", 2720, ""]]);
+  sync(mac);
+  assert.deepEqual(mac.budgets(), [{ from: "2017-11", v: 200000, cur: "aud" }, { from: "2018-08", v: 500000, cur: "cny" }, { from: "2023-09", v: 272000 }]);
+});
+
+test("spend: a date comes back exactly as the sheet shows it, whatever the time zones", async () => {
+  const { g, book, sync } = sheet();
+  const phone = await device(), mac = await device();
+  phone.add({ d: "2026-10-23", v: -1800, c: "Food" });
+  phone.setBudgets([{ from: "2026-10", v: 300000 }]);
+  sync(phone);
+  // 表格和脚本时区不一样时，按时刻换算会差一天：这里故意让换算总差一天，读回来的仍要是表格里显示的那天
+  g.sandbox.Utilities.formatDate = (d) => { const x = new Date(d.getTime() - 864e5); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
+  sync(mac);
+  assert.deepEqual(mac.entries().map((e) => e.d), ["2026-10-23"]);
+  assert.deepEqual(mac.budgets().map((b) => b.from), ["2026-10"]);
+  void book;
+});
+
+test("spend: Reload everything brings every record back as the sheet has it, keeping ones not sent yet", async () => {
+  const { sync } = sheet();
+  const phone = await device(), mac = await device();
+  const a = phone.add({ d: "2026-10-23", v: -195000, c: "House", n: "rent" });
+  sync(phone);
+  // 拉取按「这个时刻及以后写过的」算（同一毫秒的也拉，宁多勿漏）：手机写进去和电脑第一次拉落在同一毫秒时，
+  // 电脑下一次普通同步会把这一行又拉回来（这条测试偶尔失败过）。中间等两毫秒
+  for (const t0 = Date.now(); Date.now() - t0 < 2;) { /* 等 */ }
+  sync(mac);
+  mac.get(a.id).d = "2026-10-22";   // 这台设备上存的是一天前的（旧脚本拉回来时差了一天）
+  const pending = mac.add({ d: "2026-10-24", v: -500, c: "Food" });
+  sync(mac);
+  assert.equal(mac.get(a.id).d, "2026-10-22", "an ordinary sync only brings back what changed");
+  mac.forceFull();
+  assert.equal(mac.request().since, 0);
+  sync(mac);
+  assert.equal(mac.get(a.id).d, "2026-10-23");
+  assert.equal(mac.get(pending.id).d, "2026-10-24");
+});
+
+test("spend: ids stay unique even when thousands are made in the same millisecond", async () => {
+  const SP = await import("../js/spend.js?ids");
+  const ids = Array.from({ length: 20000 }, () => SP.newId());
+  assert.equal(new Set(ids).size, ids.length);
+});

@@ -1175,17 +1175,17 @@ function archive_(before, now) {
 // Budgets（From 哪个月起 / Amount 每月多少）、Categories（Kind / Name / Budget：Base = 预算的底座、Not counted = 不算进预算 / Hidden）、
 // Deleted（藏起来：删掉的那几笔，给别的设备看）。表格里可以直接改、直接加行（没有 ID 的行脚本会补上）。
 // 网页发来 { since, put: [{id, d, v, c, n, u, cur?}], del: [{id, u}], budgets?, cats? }：v 是那种钱的分，负的 = 支出；cur 是哪种钱（cny / usd …，没有 = 加币）；
-// u 是改的时间，同一笔后改的算数。回 { now, rows: since 之后变过的那几笔（since = 0 就是全部）, dels, budgets, cats, curs: true（这版认币种） }。
+// u 是改的时间，同一笔后改的算数。回 { now, rows: since 之后变过的那几笔（since = 0 就是全部）, dels, budgets, cats, curs: true（这版认币种）, bcur: true（预算也带币种） }。
 // 旧表格没有 Currency 那一列：第一次同步时加在最后
 var SPEND = {
   tx: { sheet: 'Transactions', head: ['Date', 'Kind', 'Category', 'Note', 'Amount', 'Currency', 'ID', 'Updated', 'Synced'], hide: ['ID', 'Updated', 'Synced'] },
-  budgets: { sheet: 'Budgets', head: ['From', 'Amount'] },
+  budgets: { sheet: 'Budgets', head: ['From', 'Amount', 'Currency'] },
   cats: { sheet: 'Categories', head: ['Kind', 'Name', 'Budget', 'Hidden'] },
   dead: { sheet: 'Deleted', head: ['ID', 'At'] }
 };
 var SPEND_ROLE_OUT = { base: 'Base', outside: 'Not counted' };
 // 币种：网页里的代号 ↔ 表格里写的（人民币写 RMB）。表格里手打 CNY、¥、usd 也认；空着 = 加币
-var SPEND_CUR = { cny: 'RMB', usd: 'USD', eur: 'EUR', gbp: 'GBP', jpy: 'JPY', hkd: 'HKD' };
+var SPEND_CUR = { cny: 'RMB', usd: 'USD', eur: 'EUR', gbp: 'GBP', jpy: 'JPY', hkd: 'HKD', aud: 'AUD' };
 function spendCur_(cell) {
   var t = String(cell || '').trim().toUpperCase();
   if (!t || t === 'CAD' || t === '$') return '';
@@ -1237,6 +1237,20 @@ function spendTab_(book, k) {
   return { sh: sh, col: col, width: names.length };
 }
 
+// 日期那一列照表格里显示的字读（"2026-10-23"），不用 getValues 给的时刻再按时区换——记账表格和脚本的时区不一样时会差一天
+function spendShown_(tab, name) {
+  var last = tab.sh.getLastRow();
+  return last < 2 || tab.col[name] === undefined ? [] : tab.sh.getRange(2, tab.col[name] + 1, last - 1, 1).getDisplayValues().map(function (r) { return r[0]; });
+}
+// 显示的字 → yyyy-mm-dd（格子改成了 2026/10/23、10/23/2026 也认）；认不出就退回旧的办法
+function spendDay_(raw, shown, tz) {
+  var s = String(typeof raw === 'string' ? raw : shown || '').trim(), m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s);
+  if (m) return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
+  m = /^(\d{1,2})[/.](\d{1,2})[/.](\d{4})$/.exec(s);
+  if (m) return m[3] + '-' + ('0' + m[1]).slice(-2) + '-' + ('0' + m[2]).slice(-2);
+  return day_(raw, tz);
+}
+
 function spendData_(tab) {
   var last = tab.sh.getLastRow();
   return last < 2 ? [] : tab.sh.getRange(2, 1, last - 1, tab.width).getValues();
@@ -1252,11 +1266,13 @@ function spendCats_(book) {
 }
 
 function spendBudgets_(book) {
-  var tab = spendTab_(book, 'budgets'), c = tab.col, tz = book.getSpreadsheetTimeZone();
-  return spendData_(tab).map(function (r) {
-    var f = r[c.From], from = Object.prototype.toString.call(f) === '[object Date]' ? Utilities.formatDate(f, tz, 'yyyy-MM-dd').slice(0, 7) : String(f || '').trim().slice(0, 7);
+  var tab = spendTab_(book, 'budgets'), c = tab.col, tz = book.getSpreadsheetTimeZone(), shown = spendShown_(tab, 'From');
+  return spendData_(tab).map(function (r, i) {
+    var f = r[c.From], s = String(typeof f === 'string' ? f : shown[i] || '').trim(), m = /^(\d{4})[-/.](\d{1,2})/.exec(s);
+    var from = m ? m[1] + '-' + ('0' + m[2]).slice(-2) : Object.prototype.toString.call(f) === '[object Date]' ? Utilities.formatDate(f, tz, 'yyyy-MM-dd').slice(0, 7) : s.slice(0, 7);
     var v = Math.round(Number(String(r[c.Amount]).replace(/[^\d.]/g, '')) * 100);
-    return /^\d{4}-\d{2}$/.test(from) && v > 0 ? { from: from, v: v } : null;
+    var cur = c.Currency === undefined ? '' : spendCur_(r[c.Currency]);
+    return /^\d{4}-\d{2}$/.test(from) && v > 0 ? (cur ? { from: from, v: v, cur: cur } : { from: from, v: v }) : null;
   }).filter(Boolean).sort(function (a, b) { return a.from < b.from ? -1 : a.from > b.from ? 1 : 0; });
 }
 
@@ -1281,7 +1297,8 @@ function spend_(req) {
     if (!id && r[c.Date] !== '' && String(r[c.Amount]).trim() !== '') { id = r[c.ID] = Utilities.getUuid(); r[c.Updated] = now; r[c.Synced] = now; fixed.push(i); }
     if (id) at[id] = i;
   });
-  fixed.forEach(function (i) { tx.sh.getRange(i + 2, 1, 1, tx.width).setValues([data[i]]); });
+  // 一次写回（一行一行写，几千行会超时）
+  if (fixed.length) { var lo = Math.min.apply(null, fixed), hi = Math.max.apply(null, fixed); tx.sh.getRange(lo + 2, 1, hi - lo + 1, tx.width).setValues(data.slice(lo, hi + 1)); }
   var cell = function (x) {
     var row = data.length && at[x.id] !== undefined ? data[at[x.id]].slice() : Array(tx.width).fill('');
     row[c.Date] = String(x.d || ''); row[c.Kind] = x.v > 0 ? 'Income' : 'Expense'; row[c.Category] = toCell_('text', x.c || '');
@@ -1289,7 +1306,8 @@ function spend_(req) {
     row[c.ID] = x.id; row[c.Updated] = Number(x.u) || now; row[c.Synced] = now;
     return row;
   };
-  // 写：表格里那一笔比发来的新（别的设备后改的）就不动
+  // 写：表格里那一笔比发来的新（别的设备后改的）就不动。新的几笔攒起来，最后接在表格底下一次写（一次导几千笔也不超时）
+  var fresh = data.length;
   (req.put || []).forEach(function (x) {
     if (!x || !x.id || !/^\d{4}-\d{2}-\d{2}$/.test(String(x.d))) return;
     var i = at[x.id];
@@ -1301,9 +1319,13 @@ function spend_(req) {
       var r = cell(x);
       data.push(r);
       at[x.id] = data.length - 1;
-      tx.sh.getRange(data.length + 1, 1, 1, tx.width).setValues([r]);
     }
   });
+  if (data.length > fresh) {
+    var need = data.length + 1 - tx.sh.getMaxRows();
+    if (need > 0) tx.sh.insertRowsAfter(tx.sh.getMaxRows(), need);
+    tx.sh.getRange(fresh + 2, 1, data.length - fresh, tx.width).setValues(data.slice(fresh));
+  }
   // 删：从下往上删（行号不乱），每一笔记进 Deleted
   var gone = [], log = [];
   (req.del || []).forEach(function (x) {
@@ -1317,15 +1339,15 @@ function spend_(req) {
   if (log.length) dead.sh.getRange(dead.sh.getLastRow() + 1, 1, log.length, 2).setValues(log);
   if (gone.length) data = spendData_(tx);
   // 清单：发来了就整张换掉
-  if (Array.isArray(req.budgets)) spendWrite_(spendTab_(book, 'budgets'), req.budgets.map(function (b) { return [String(b.from), Number(b.v) / 100]; }));
+  if (Array.isArray(req.budgets)) spendWrite_(spendTab_(book, 'budgets'), req.budgets.map(function (b) { return [String(b.from), Number(b.v) / 100, SPEND_CUR[b.cur] || '']; }));
   if (Array.isArray(req.cats)) {
     spendWrite_(spendTab_(book, 'cats'), req.cats.map(function (x) { return [x.kind === 'in' ? 'Income' : 'Expense', toCell_('text', x.name), SPEND_ROLE_OUT[x.role] || '', x.hidden ? 'yes' : '']; }));
     cats = spendCats_(book);
   }
   // 拉：since 之后写过的（since = 0 就是全部）。同一毫秒写的也算上（多发几行没关系，漏了就找不回来）
-  var rows = [];
-  data.forEach(function (r) {
-    var id = String(r[c.ID] || '').trim(), d = day_(r[c.Date], tz);
+  var rows = [], shown = spendShown_(tx, 'Date');
+  data.forEach(function (r, i) {
+    var id = String(r[c.ID] || '').trim(), d = spendDay_(r[c.Date], shown[i], tz);
     if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(d) || (since && !(Number(r[c.Synced]) >= since))) return;
     var v = Math.round(Number(String(r[c.Amount]).replace(/[^\d.]/g, '')) * 100) || 0, cat = String(r[c.Category] || '').trim();
     var isIn = /^inc/i.test(String(r[c.Kind] || '')) || (!String(r[c.Kind] || '').trim() && inc[cat]);
@@ -1337,7 +1359,7 @@ function spend_(req) {
   // 删除记录只留 14 天
   var keep = spendData_(dead).filter(function (r) { return now - Number(r[1]) < KEEP_DELETED_DAYS * 864e5; });
   if (keep.length < spendData_(dead).length) spendWrite_(dead, keep);
-  return { ok: true, now: now, rows: rows, dels: dels, budgets: spendBudgets_(book), cats: cats, curs: true };
+  return { ok: true, now: now, rows: rows, dels: dels, budgets: spendBudgets_(book), cats: cats, curs: true, bcur: true };
 }
 
 // ================= 网页接口 =================

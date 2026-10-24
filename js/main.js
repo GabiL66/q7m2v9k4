@@ -12,10 +12,10 @@ import { initFx, setFx, confetti, refreshFxColors, tintSky } from "./fx.js";
 import { toast, lineInfo, ballHTML } from "./ui/common.js";
 import { initModal, closeModal } from "./ui/modal.js";
 import { initSelect } from "./ui/select.js";
-import { todayHTML, initToday, shownDate, showDate } from "./ui/today.js";
+import { todayHTML, initToday, shownDate, showDate, marquees } from "./ui/today.js";
 import { calendarHTML, poolHTML, initCalendar, handleDrop } from "./ui/calendar.js";
 import { projectsHTML, initProjects, refreshProjectEditor, projectAlerts } from "./ui/projects.js";
-import { initGoals, goalDrop } from "./ui/goals.js";
+import { initGoals, goalDrop, goalsAfterRender } from "./ui/goals.js";
 import { initLinks, afterRender as linksAfterRender } from "./ui/links.js";
 import { initIdeas, ideasPhoneHTML } from "./ui/ideas.js";
 import { settingsHTML, initSettings } from "./ui/settings.js";
@@ -100,7 +100,11 @@ function sidebarHTML(c, view) {
 let desk = null;
 function showDesk() {
   if (!desk) desk = createSpending();
-  if (desk.el.parentNode !== main || main.children.length !== 1) { main.replaceChildren(desk.el); desk.show(); }
+  if (desk.el.parentNode !== main || main.children.length !== 1) {
+    main.replaceChildren(desk.el); desk.show();
+    // 和手机拉开记账一样：半小时没整份对过，就整份拉一次（表格里手改的、别处改的都回来）
+    if (store.setting("spend")?.url && spend.wantFull()) sync.queue();
+  }
 }
 
 // ---------- 整页重画（正在打字的输入框，值、光标都留住） ----------
@@ -177,6 +181,7 @@ function draw() {
   if (view === "spending") showDesk();
   else main.innerHTML = view === "calendar" ? calendarHTML(c) : view === "projects" ? projectsHTML(c) : view === "stats" ? statsHTML(c) : view === "meals" ? mealsHTML(c) : view === "shop" ? shopHTML(c, phone) : view === "settings" ? settingsHTML(phone) : view === "reading" ? readingHTML(phone) : view === "ideas" ? ideasPhoneHTML(c) : view === "friends" ? friendsHTML(c) : todayHTML(c, phone);
   placePills();
+  marquees(main);   // 手机今天页展开那一行放不下的「For …」链：自己滚
   if (document.startViewTransition) nameParts(main, true);
   rollNumbers();
   // 打开阅读页：同步时顺便拉一次阅读表格的列表（查重用）
@@ -201,6 +206,7 @@ function draw() {
   paintSync();
   refreshEditor();
   refreshProjectEditor();
+  goalsAfterRender();   // 右栏滚回原来的地方（要在连线重画之前，线才量得对）
   linksAfterRender();
   refreshMealEditor();
   refreshFriendEditor();

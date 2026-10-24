@@ -1,6 +1,7 @@
 // 记账的计算（不碰页面）：按日 / 月 / 年加总、预算、超没超、图表的线、推荐、导出成 .md、从文字里导入。
 // 一笔 = { id, d: "2026-10-15", v: 分（负 = 支出、正 = 收入）, c: 类别, n: 备注, u: 改的时间, cur: 哪种钱（没写 = 加币，见下面 CURS） }。只记年月日，不记钟点。
-// 预算 = 从某个月起每月多少（{ from: "2026-10", v: 分 }，一个月用它之前最近定的那个）。
+// 预算 = 从某个月起每月多少（{ from: "2026-10", v: 分, cur: 哪种钱（没写 = 加币） }，一个月用它之前最近定的那个）。
+// 预算按当时用的那种钱定（2017 年澳币、2018 年起人民币、2023-09 起加币），看的时候和每一笔一样按汇率换成「看的那种」。
 // 类别 = { name, kind: "out" / "in", hidden, role }：role "base" = 预算的底座（House：月度图里是梯形下面那一截，
 // 每天的额度不算它）；"outside" = 算支出、不算进预算（Bonds：押金、还没出正式账单的，以后要回来的）。
 
@@ -29,9 +30,9 @@ export const fmtDate = (d) => { const p = parts(d); return MON[p.m - 1] + " " + 
 export const CURS = [
   { k: "cad", sym: "$", code: "CAD", dec: 2 }, { k: "cny", sym: "¥", code: "RMB", dec: 2 }, { k: "usd", sym: "US$", code: "USD", dec: 2 },
   { k: "eur", sym: "€", code: "EUR", dec: 2 }, { k: "gbp", sym: "£", code: "GBP", dec: 2 }, { k: "jpy", sym: "JP¥", code: "JPY", dec: 0 },
-  { k: "hkd", sym: "HK$", code: "HKD", dec: 2 }
+  { k: "hkd", sym: "HK$", code: "HKD", dec: 2 }, { k: "aud", sym: "A$", code: "AUD", dec: 2 }
 ];
-const ROUGH = { cad: 1, cny: 4.75, usd: 0.71, eur: 0.635, gbp: 0.533, jpy: 112.5, hkd: 5.59 };
+const ROUGH = { cad: 1, cny: 4.75, usd: 0.71, eur: 0.635, gbp: 0.533, jpy: 112.5, hkd: 5.59, aud: 1.09 };
 export const curInfo = (k) => CURS.find((c) => c.k === k) || CURS[0];
 export const isCur = (k) => CURS.some((c) => c.k === k);
 export const curOf = (e) => (e && isCur(e.cur) ? e.cur : "cad");
@@ -66,10 +67,6 @@ export const kindOf = (cats, name) => (cats.find((c) => c.name === name) || {}).
 export const keyOf = (p, mode) => (mode === "day" ? iso(p.y, p.m, p.d) : mode === "month" ? ym(p.y, p.m) : String(p.y));
 export const samePeriod = (a, b, mode) => keyOf(a, mode) === keyOf(b, mode);
 export function inPeriod(e, p, mode) { return e.d.startsWith(mode === "day" ? iso(p.y, p.m, p.d) : mode === "month" ? ym(p.y, p.m) : String(p.y)); }
-export function isFuture(p, mode, today) {
-  const t = parts(today);
-  return mode === "day" ? ord(p.y, p.m, p.d) > ord(t.y, t.m, t.d) : mode === "month" ? ord(p.y, p.m) > ord(t.y, t.m) : p.y > t.y;
-}
 
 const blank = () => ({ out: 0, inc: 0, base: 0, outside: 0, n: 0, nOut: 0, nIn: 0, cat: {}, cnt: {} });
 export const EMPTY = Object.freeze(blank());
@@ -105,6 +102,28 @@ export function budgetAt(budgets, y, m) {
   return v;
 }
 
+// 预算整份换成 to 那种钱（R = 汇率表）
+export const budgetsIn = (budgets, to, R) => budgets.map((b) => { const c = isCur(b.cur) ? b.cur : "cad"; return c === to ? b : { ...b, v: convert(b.v, c, to, R) }; });
+
+// 一行一个预算地粘进来：「2018.08 5000 (RMB)」「2020-09 9100」「Prior 2000 (AUD)」——币种写了就一直用到下次写，没写过 = 加币；
+// Prior = 最早那个（from 给 prior 那个月）。→ { list: [{ from, v, cur? }], bad: 行数 }
+export function budgetsFromText(text, prior) {
+  const list = [];
+  let cur = "cad", bad = 0;
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = /^(prior|before|(\d{4})\s*[.\-/年]\s*(\d{1,2})\s*月?)\s+([\d,]+(?:\.\d+)?)\s*(?:\(?\s*([A-Za-z]{3}|[¥$€£])\s*\)?)?$/i.exec(line);
+    if (!m || !(+m[3] >= 1 && +m[3] <= 12) && !/^(prior|before)$/i.test(m[1])) { bad++; continue; }
+    if (m[5]) cur = /^[A-Za-z]{3}$/.test(m[5]) ? curFromText("1 " + m[5]) : curFromText(m[5] + "1");
+    const v = toCents(m[4].replace(/,/g, ""));
+    if (!(v > 0)) { bad++; continue; }
+    const from = /^(prior|before)$/i.test(m[1]) ? prior : ym(+m[2], +m[3]);
+    list.push({ from, v, ...(cur !== "cad" ? { cur } : {}) });
+  }
+  return { list, bad };
+}
+
 // 算进预算的花销 = 支出 − 不算进预算的那几类
 export const counted = (g) => g.out - g.outside;
 // 每天的额度：(这个月的预算 − 底座) ÷ 这个月的天数
@@ -122,11 +141,12 @@ export function yearBudget(budgets, y, today) {
 export function budgetOf(ix, budgets, p, mode, today) {
   return mode === "month" ? budgetAt(budgets, p.y, p.m) : mode === "year" ? yearBudget(budgets, p.y, today) : allowance(ix, budgets, p.y, p.m);
 }
-// 超了没有：日 = 底座和不算的以外，比每天的额度；月 / 年 = 算进预算的花销比预算。没定预算就永远不算超
+// 超了没有（标橙色）：月 / 年 = 算进预算的花销比预算；日 = 那个月到这一天为止一共算进预算的花销，超过这个月的预算没有。
+// 她 2026-10-22 说的：没超预算就别标橙色——某一天比每天的额度花得多不算超。没定预算就永远不算超
 export function isOver(ix, budgets, p, mode, today) {
-  const g = sumOf(ix, p, mode), B = budgetOf(ix, budgets, p, mode, today);
-  if (!B) return false;
-  return mode === "day" ? g.out - g.base - g.outside > B : counted(g) > B;
+  if (mode === "day") { const B = budgetAt(budgets, p.y, p.m); return B > 0 && counted(upTo(ix, p.y, p.m, p.d)) > B; }
+  const B = budgetOf(ix, budgets, p, mode, today);
+  return B > 0 && counted(sumOf(ix, p, mode)) > B;
 }
 
 // 图表的刻度：往上取一个好读的整数
@@ -136,47 +156,59 @@ export function niceMax(v) {
 }
 
 // 月度图：底座（这个月底座类别花的）+ 每天累加的其余花销（不算的那几类不算），预算 = 梯形（底座那一截 + 往上斜到预算）。
-// 今天以后的按到今天为止的平均速度画虚线
-export function monthChart(ix, budgets, y, m, today) {
-  const t = parts(today), N = dim(y, m), B = budgetAt(budgets, y, m), g = sumOf(ix, { y, m }, "month"), base = g.base;
+// 今天以后的按到今天为止的平均速度画虚线。house: false = 只看底座（House）以外：没有底座、线从 0 起，预算从 0 斜到「预算 − 底座」
+export function monthChart(ix, budgets, y, m, today, { house = true } = {}) {
+  const t = parts(today), N = dim(y, m), g = sumOf(ix, { y, m }, "month"), base = house ? g.base : 0;
+  const B = house ? budgetAt(budgets, y, m) : Math.max(0, budgetAt(budgets, y, m) - g.base);
   const isCur = y === t.y && m === t.m, last = ord(y, m) > ord(t.y, t.m) ? 0 : isCur ? t.d : N;
-  const cv = [0];
-  for (let d = 1; d <= N; d++) { const x = sumOf(ix, { y, m, d }, "day"); cv[d] = cv[d - 1] + (d <= last ? x.out - x.base - x.outside : 0); }
+  // 今天以后的虚线 = 到今天的 + 已经提前记下的那几笔（落在它们那天）+ 照平均速度
+  const cv = [0], ahead = [0];
+  for (let d = 1; d <= N; d++) { const x = sumOf(ix, { y, m, d }, "day"), k = x.out - x.base - x.outside; cv[d] = cv[d - 1] + (d <= last ? k : 0); ahead[d] = ahead[d - 1] + (d > last ? k : 0); }
   const rate = last ? cv[last] / last : 0;
-  const val = (d) => (d <= last ? base + cv[d] : base + cv[last] + rate * (d - last));
+  const val = (d) => (d <= last ? base + cv[d] : base + cv[last] + ahead[d] + rate * (d - last));
   const pace = (d) => (B ? base + Math.max(0, B - base) * d / N : 0);
-  return { n: N, B, base, last, isCur, val, pace, top: niceMax(Math.max(B, val(N), base) * 1.04 || 100), used: g, home: (isCur ? t.d : N) - 1 };
+  // over(d)：到那天一共的超过这个月的预算了（图上读数的点这时才是橙的；比斜着的预算线高不算超）
+  return { n: N, B, base, last, isCur, val, pace, over: (d) => B > 0 && val(d) > B, top: niceMax(Math.max(B, val(N), base) * 1.04 || 100), used: g, home: (isCur ? t.d : N) - 1, house };
 }
 
-// 年度图：按天画一整年（能拖到任意一天）。每个月和月度图一样：月初先加上这个月的底座，再一天天加其余的（不算的那几类不算），
-// 预算 = 每个月一段梯形接起来（前面几个月的预算 + 这个月的底座，斜着升到这个月的预算）。今天以后按今年到今天的平均速度画虚线
+// 年度图：按天画一整年（能拖到任意一天），每一笔落在它自己那天（她 2026-10 要的：不再把整月的 House 堆在 1 号）。
+//   线 = 每天的（支出 − 不算的）一天天加起来；House 那一块 = House 一天天加起来；
+//   预算 = House 加起来 + 每天的额度（(这个月的预算 − 这个月的 House) ÷ 这个月的天数）加起来——House 付了预算也跟着涨，所以一月一号交了房租不算超。
+//   以后还没记 House 的月份照最近一个月的 House、算在月初那天。今天以后按今年到今天的平均速度画虚线（提前记下的落在它们那天）。
+//   house: false = 只看 House 以外：线、预算都不含 House，没有那一块，B 是「预算 − House」
 export const daysIn = (y) => (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0) ? 366 : 365);
 export function dayOfYear(y, m, d) { let n = d; for (let k = 1; k < m; k++) n += dim(y, k); return n; }
 export function dateOfDay(y, i) { let m = 1; while (m < 12 && i > dim(y, m)) { i -= dim(y, m); m++; } return iso(y, m, i); }
-export function yearChart(ix, budgets, y, today) {
+export function yearChart(ix, budgets, y, today, { house = true } = {}) {
   const t = parts(today), n = daysIn(y), last = y > t.y ? 0 : y === t.y ? dayOfYear(t.y, t.m, t.d) : n;
-  const val = [0], bud = [0], base = [0];
-  let done = 0, budDone = 0, baseDone = 0, i = 0, lastBase = 0;
+  const val = [0], bud = [0], base = [0], ahead = [0], cap = [0];
+  let i = 0, run = 0, budRun = 0, baseRun = 0, lastBase = 0, B = 0;
   for (let m = 1; m <= 12; m++) {
-    const N = dim(y, m), B = budgetAt(budgets, y, m), g = sumOf(ix, { y, m }, "month"), started = i + 1 <= last;
-    const b = started ? g.base : lastBase;
-    if (started && g.base) lastBase = g.base;
-    let cv = 0;
+    const N = dim(y, m), Bm = budgetAt(budgets, y, m), g = sumOf(ix, { y, m }, "month"), started = i + 1 <= last;
+    const has = g.base > 0, b = has ? g.base : started ? 0 : lastBase;   // 这个月的 House：记了的照记的；以后还没记的照最近一个月的
+    if (has) lastBase = g.base;
+    const allow = Bm ? Math.max(0, Bm - b) / N : 0;                     // House 以外，每天的额度
+    if (y !== t.y || m <= t.m) B += house ? Bm : Math.max(0, Bm - b);   // 和 yearBudget 一样：今年算到这个月，别的年份算满十二个月
     for (let d = 1; d <= N; d++) {
       i++;
-      if (i <= last) { const x = sumOf(ix, { y, m, d }, "day"); cv += x.out - x.base - x.outside; }
-      val[i] = done + (started ? g.base : 0) + cv;
-      bud[i] = B ? budDone + b + Math.max(0, B - b) * d / N : budDone;
-      base[i] = baseDone + b;
+      const x = sumOf(ix, { y, m, d }, "day"), hd = has ? x.base : d === 1 ? b : 0;
+      const k = x.out - x.outside - (house ? 0 : x.base);
+      if (i <= last) run += k;
+      ahead[i] = ahead[i - 1] + (i > last ? k : 0);   // 提前记下的、今天以后的那几笔
+      val[i] = run;
+      baseRun += house ? hd : 0;
+      budRun += allow + (house ? hd : 0);
+      base[i] = baseRun;
+      bud[i] = Bm ? budRun : bud[i - 1];
+      if (!Bm) budRun = bud[i];   // 没定预算的月份：预算线停着不涨
     }
-    done += started ? counted(g) : 0;
-    budDone += B;
-    baseDone += b;
+    for (let k = i - N + 1; k <= i; k++) cap[k] = bud[i];   // 这个月里每一天：到这个月底为止的预算（算超没超用它）
   }
   const rate = last ? val[last] / last : 0;
-  const v = (k) => (k <= last ? val[k] : val[last] + rate * (k - last));
-  return { n, B: yearBudget(budgets, y, today), last, isCur: y === t.y, val: v, budgetLine: bud, baseLine: base,
-    top: niceMax(Math.max(bud[n], v(n)) * 1.04 || 100), used: sumOf(ix, { y }, "year"), home: (last || n) - 1, dateOf: (k) => dateOfDay(y, k) };
+  const v = (k) => (k <= last ? val[k] : val[last] + ahead[k] + rate * (k - last));
+  // over(k)：到那天一共的超过到那个月底为止的预算了（读数的点这时才是橙的）
+  return { n, B, last, isCur: y === t.y, val: v, budgetLine: bud, baseLine: base, house, over: (k) => cap[k] > 0 && v(k) > cap[k],
+    top: niceMax(Math.max(bud[n], v(n), base[n]) * 1.04 || 100), used: sumOf(ix, { y }, "year"), home: (last || n) - 1, dateOf: (k) => dateOfDay(y, k) };
 }
 
 // 五个小方块的那条线：和之前六个月（年模式 = 之前几年）比，这个数落在什么范围里。
@@ -186,7 +218,10 @@ function upTo(ix, y, m, cut) {
   for (let d = 1; d <= cut; d++) { const x = sumOf(ix, { y, m, d }, "day"); g.out += x.out; g.inc += x.inc; g.base += x.base; g.outside += x.outside; }
   return g;
 }
-export const metricsOf = (g, B) => ({ expense: g.out, income: g.inc, left: B - (g.out - g.outside), balance: g.inc - g.out, used: B ? (g.out - g.outside) / B : 0 });
+// leftPct = 预算还剩几成，不算底座（House）和不算进预算的（Bonds）：1 −（支出 − 底座 − 不算的）÷（预算 − 底座）；没预算 = null。
+// 提前记的、日期还没到的也算在里面（记了就算）
+export const metricsOf = (g, B) => ({ expense: g.out, income: g.inc, left: B - (g.out - g.outside), balance: g.inc - g.out, used: B ? (g.out - g.outside) / B : 0,
+  leftPct: B - g.base > 0 ? 1 - (g.out - g.outside - g.base) / (B - g.base) : null, room: Math.max(0, B - g.base) });
 export function compare(ix, budgets, p, mode, today) {
   const t = parts(today), prev = [];
   let cur, cutText = "";
@@ -217,8 +252,8 @@ export function compare(ix, budgets, p, mode, today) {
     }
     if (isCur) cutText = "by day " + t.d;
   }
-  const range = (k) => (prev.length >= 2 ? [Math.min(...prev.map((x) => x[k])), Math.max(...prev.map((x) => x[k]))] : null);
-  return { cur, n: prev.length, cutText, range: { expense: range("expense"), income: range("income"), left: range("left"), balance: range("balance") } };
+  const range = (k) => { const xs = prev.map((x) => x[k]).filter((v) => v !== null && v !== undefined); return xs.length >= 2 ? [Math.min(...xs), Math.max(...xs)] : null; };
+  return { cur, n: prev.length, cutText, range: { expense: range("expense"), income: range("income"), left: range("left"), leftPct: range("leftPct"), balance: range("balance") } };
 }
 
 // 推荐：①这个月之前两个月都有、同样金额的底座类别（房租、网费这类），这个月还没记的；②最近 60 天里同一类同一个金额出现得最多的那笔（至少两次）。
@@ -263,10 +298,11 @@ export const byNewest = (a, b) => b.d.localeCompare(a.d) || (b.u || 0) - (a.u ||
 export function toMarkdown(entries, cats, budgets, which, today, show = "cad", R = ROUGH) {
   const rows = (which ? entries.filter((e) => e.d.startsWith(ym(which.y, which.m))) : entries.slice()).sort((a, b) => a.d.localeCompare(b.d) || (a.u || 0) - (b.u || 0));
   const conv = inCur(rows, show, R), ix = index(conv, cats), m$ = (v) => money(v, show);
+  budgets = budgetsIn(budgets, show, R);
   const tot = conv.reduce((g, e) => { if (e.v < 0) g.out -= e.v; else g.inc += e.v; return g; }, { out: 0, inc: 0 });
   const lines = ["# Spending · " + (which ? MONTH[which.m - 1] + " " + which.y : "everything") + " (" + curInfo(show).code + ")", ""];
   if (which) {
-    const B = convert(budgetAt(budgets, which.y, which.m), "cad", show, R), g = sumOf(ix, which, "month");
+    const B = budgetAt(budgets, which.y, which.m), g = sumOf(ix, which, "month");
     lines.push("Spent " + m$(tot.out) + " · Income " + m$(tot.inc) + (B ? " · Budget " + m$(B) + " · Left " + (B - counted(g) < 0 ? "−" : "") + m$(B - counted(g)) : ""), "");
   } else lines.push(rows.length + " records · exported " + fmtDate(today), "");
   const outCats = new Map(), inCats = new Map();
@@ -295,7 +331,7 @@ export function curFromText(s) {
 }
 
 // 从文字里导入：导出的 .md（只读 Transactions 那张表），或者一行一笔「日期, 类别, 金额, 备注」（日期 2026-10-03 或 Oct 3, 2026；金额可以带币种：¥88、88 RMB）。
-// 收入：类别是收入类，或者金额前面带 +。不认识的类别：带 + 的当新的收入类，别的当新的支出类（cats 里多出来的那几个在 added 里）
+// 收入：金额前面带 +，或者没带符号、类别是收入类（带 − 的一律是支出）。不认识的类别：带 + 的当新的收入类，别的当新的支出类（cats 里多出来的那几个在 added 里）
 export function fromText(text, cats) {
   const rows = [], added = [];
   let bad = 0, inTx = false;
@@ -331,7 +367,9 @@ export function fromText(text, cats) {
     let cat = known.get(c.toLowerCase());
     const plus = /^\s*\+/.test(String(amt));
     if (!cat) { cat = { name: c, kind: plus ? "in" : "out", hidden: false, role: "" }; known.set(c.toLowerCase(), cat); added.push(cat); }
-    rows.push({ d, v: cat.kind === "in" ? v : -v, c: cat.name, n: (note || "").trim(), ...(cur !== "cad" ? { cur } : {}) });
+    // 金额自己带了 − / + 就照它（退款、收到的礼金、收入里冲掉的一笔），没带才看类别是收是支
+    const sign = /^\s*[−-]/.test(String(amt)) ? -1 : plus ? 1 : cat.kind === "in" ? 1 : -1;
+    rows.push({ d, v: sign * v, c: cat.name, n: (note || "").trim(), ...(cur !== "cad" ? { cur } : {}) });
   }
   return { rows, added, bad };
 }
