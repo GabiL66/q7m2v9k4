@@ -25,11 +25,19 @@
 .mn .mn-ic .ic { width: 21px; height: 21px; }
 .mn .mn-ic.mn-sm { width: 28px; height: 28px; color: #B9B5AC; }
 .mn .mn-ic.mn-sm .ic { width: 17px; height: 17px; }
-.mn .mn-rst { opacity: 0; transform: scale(.5); pointer-events: none; transition: opacity .2s, transform .28s var(--mn-spring); }
-.mn .mn-rst.on { opacity: 1; transform: none; pointer-events: auto; }
+/* 回到现在的小点：挂在标题右边外面（不占位，标题照样正中），不在当前那一期才弹出来 */
+.mn .mn-now { all: unset; position: absolute; left: calc(100% - 4px); top: 50%; display: grid; place-items: center; width: 28px; height: 28px; margin-top: -14px; cursor: pointer; opacity: 0; transform: scale(.5); pointer-events: none; transition: opacity .2s, transform .28s var(--mn-spring); }
+.mn .mn-now i { width: 7px; height: 7px; border-radius: 50%; background: var(--mn-blue); }
+.mn .mn-now.on { opacity: 1; transform: none; pointer-events: auto; }
+.mn .mn-now:active i { transform: scale(.8); }
+.mn .mn-now:focus-visible { outline: 1.5px solid var(--mn-blue); outline-offset: -4px; border-radius: 50%; }
 .mn .mn-hdr { flex: none; display: flex; align-items: center; justify-content: space-between; height: 34px; }
-.mn .mn-thead { flex: none; display: flex; align-items: flex-end; justify-content: space-between; margin-top: 8px; }
-.mn .mn-nav { display: flex; align-items: center; margin-bottom: 2px; }
+.mn .mn-thead { flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; margin-top: 8px; }
+.mn .mn-thead > .mn-ic { margin-top: -1px; }   /* 箭头和标题那一行齐 */
+.mn .mn-tmid { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.mn .mn-tw { position: relative; max-width: 100%; }
+.mn .mn-tsub { margin-top: 3px; display: flex; align-items: center; justify-content: center; max-width: 100%; }
+.mn .mn-tsub > * { flex-shrink: 0; }
 
 /* 分段开关：选中的那块滑过去 */
 .mn .mn-seg { position: relative; flex: none; display: flex; padding: 3px; border-radius: 11px; background: var(--mn-fill); box-shadow: var(--mn-hair); }
@@ -91,6 +99,13 @@
 .mn .mn-empty { padding: 40px 0; text-align: center; font-size: 13px; color: var(--mn-mute); }
 .mn .mn-foot { flex: none; padding-top: 10px; border-top: 1px solid var(--mn-line); }
 .mn .mn-recw { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+/* 底栏一行：推荐的几笔占左边（横着滚），右下角一个圆的「+」记一笔（js/ui/money.js 的 data-act="add"）——和数字键盘的 Add 一个颜色 */
+.mn .mn-frow { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.mn .mn-frow .mn-recw { flex: 1; min-width: 0; margin-bottom: 0; }
+.mn .mn-fab { all: unset; flex: none; display: grid; place-items: center; width: 44px; height: 44px; margin-left: auto; border-radius: 50%; background: var(--mn-pri); color: var(--mn-pri-ink); cursor: pointer; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14); transition: transform .28s var(--mn-spring); }
+.mn .mn-fab .ic { width: 22px; height: 22px; stroke-width: 2.2; }
+.mn .mn-fab:active { transform: scale(.94); transition-duration: .12s; }
+.mn .mn-fab:focus-visible { outline: 1.5px solid var(--mn-blue); outline-offset: 2px; }
 .mn .mn-recw[hidden] { display: none; }
 .mn .mn-big { all: unset; display: block; width: 100%; height: 44px; border-radius: 13px; background: var(--mn-pri); color: var(--mn-pri-ink); text-align: center; line-height: 44px; font-size: 15px; font-weight: 500; cursor: pointer; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14); transition: transform .28s var(--mn-spring); }
 .mn .mn-big:active { transform: scale(.97); transition-duration: .12s; }
@@ -124,12 +139,23 @@
 .mn .mn-cards { margin: 14px -16px 0; padding: 0 16px; }
 .mn .mn-card { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 10px 14px 11px 12px; border-radius: 12px; background: var(--mn-fill); box-shadow: var(--mn-hair); }   /* 宽度跟着里面的字走 */
 .mn .mn-card .v { font-size: 16px; font-weight: 500; white-space: nowrap; }
+/* Budget Left 那个数突出一点（她 10-25 要的）：大一号、加粗、记账自己的钴蓝（= 正常）；超了照旧是橙的（js 里写在 style 上，盖过这里） */
+.mn .mn-card.mn-card-hl .v { font-size: 19px; font-weight: 600; color: var(--mn-blue); }
+/* Budget Left 那个数后面的「· 69%」（剩下几成） */
+.mn .mn-kp::before { content: "·"; margin: 0 .3em; color: var(--mn-mute); }
+/* 手机记账主页标题下面那一行最前面：这个月预算还剩多少，灰的（超了是橙的） */
+.mn .mn-tleft { display: inline-flex; column-gap: .3em; max-width: 14em; overflow: hidden; color: var(--mn-mute); transition: max-width .32s var(--mn-enter), opacity .2s; }
+/* 图表页开着的时候收起来（下面 Budget Left 方块里有），合上再展开 */
+.mn.mn-chart-on .mn-tleft { max-width: 0; opacity: 0; }
+.mn .mn-tleft.over { color: var(--mn-orange); }
+.mn .mn-tleft[hidden] { display: none; }
+.mn .mn-up { margin-left: 4px; padding: 0 5px; border-radius: 999px; background: rgba(255, 255, 255, .08); font: 600 9px/1.6 var(--num); letter-spacing: .07em; text-transform: uppercase; }   /* 提前记的、日期还没到（已经算进合计） */
 .mn .mn-track { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .1); overflow: hidden; }
 .mn .mn-track > i { display: block; height: 100%; width: 0; background: var(--mn-blue); transition: width .52s var(--mn-enter); }
 .mn .mn-track > i.over { background: var(--mn-orange); }
 /* 之前六个月的范围：整条线 = 最少到最多，点 = 这次在哪儿（比最差的还差 = 橙） */
 .mn .mn-range { position: relative; overflow: visible; background: rgba(255, 255, 255, .14); }
-.mn .mn-range > b { position: absolute; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: var(--mn-blue); box-shadow: 0 0 0 2px #101015; transition: left .52s var(--mn-enter); }
+.mn .mn-range > b { position: absolute; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: var(--mn-blue); box-shadow: 0 0 0 2px #101015; transition: left .62s var(--spring-pop), background-color .3s; }   /* 换期时点弹着滑到新位置（只改 left，元素不重建） */
 .mn .mn-range > b.over { background: var(--mn-orange); }
 .mn .mn-sect { margin-top: 22px; font-size: 15px; font-weight: 500; }
 .mn .mn-bk { border-bottom: 1px solid var(--mn-line); }
@@ -144,6 +170,10 @@
 .mn .mn-irow .n { color: #B9B5AC; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* 记一笔 / 改一笔：手机上是从底下弹上来的面板 + 数字键盘 */
+/* 图：电脑上鼠标停在点得动的地方（完整的时候 House 上面那块；只看 House 以外的时候哪儿都行）是手指形光标；手机图下面一行小字说怎么回来 */
+.mn .mn-chart.mn-tap { cursor: pointer; }
+.mn .mn-cnote { margin: 4px 0 0; }
+.spend .sp-legend .sp-back { color: var(--mn-mute); }
 .mn .mn-scrim { position: absolute; inset: 0; z-index: 40; background: #000; opacity: 0; pointer-events: none; transition: opacity .3s; }
 .mn .mn-scrim.on { opacity: .55; pointer-events: auto; }
 .mn .mn-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 41; padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px)); border-radius: 26px 26px 0 0;
@@ -158,11 +188,12 @@
 .mn .mn-amt .cur { margin-right: 3px; font-size: 17px; font-weight: 400; color: var(--mn-mute); }
 .mn .mn-amt .zero { color: #3A3A48; }
 .mn .mn-amt .in { display: inline-block; animation: mn-rin .28s var(--mn-enter); }
-.mn .mn-pad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 6px; }
-.mn .mn-k { all: unset; display: flex; align-items: center; justify-content: center; height: 40px; border-radius: 12px; font: 400 19px "JetBrains Mono", monospace; cursor: pointer; transition: background .25s, transform .28s var(--mn-spring); }
+/* 数字键盘：她说大一点好按——52px 高、24px 字（今天页 Spend 点出来的、面板里改一笔的，都是这一张） */
+.mn .mn-pad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+.mn .mn-k { all: unset; display: flex; align-items: center; justify-content: center; height: 52px; border-radius: 14px; font: 400 24px "JetBrains Mono", monospace; cursor: pointer; transition: background .25s, transform .28s var(--mn-spring); }
 .mn .mn-k:active { background: rgba(255, 255, 255, .1); transform: scale(.93); transition-duration: .06s; }   /* 数字键盘按得快：按下的反馈比别处更快 */
-.mn .mn-k.op { font-size: 16px; color: var(--mn-mute); }
-.mn .mn-k.add { grid-row: span 2; height: auto; border-radius: 13px; background: var(--mn-pri); color: var(--mn-pri-ink); font: 500 15px "Space Grotesk", sans-serif; }
+.mn .mn-k.op { font-size: 20px; color: var(--mn-mute); }
+.mn .mn-k.add { grid-row: span 2; height: auto; border-radius: 15px; background: var(--mn-pri); color: var(--mn-pri-ink); font: 500 17px "Space Grotesk", sans-serif; }
 .mn .mn-act { all: unset; font-size: 13px; color: var(--mn-blue); cursor: pointer; }
 .mn .mn-act.warn { color: #E8674A; }
 
@@ -247,6 +278,8 @@
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 110 14' preserveAspectRatio='none'%3E%3Cpath d='M0 7Q27.5 15 55 7T110 7' fill='none' stroke='white' stroke-opacity='.16' stroke-width='1.6'/%3E%3C/svg%3E") var(--shift, 0px) 0 / 110px 14px repeat-x, #000;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 110 14' preserveAspectRatio='none'%3E%3Cpath d='M0 0V7Q27.5 15 55 7T110 7V0Z'/%3E%3C/svg%3E") var(--shift, 0px) 0 / 110px 14px repeat-x;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 110 14' preserveAspectRatio='none'%3E%3Cpath d='M0 0V7Q27.5 15 55 7T110 7V0Z'/%3E%3C/svg%3E") var(--shift, 0px) 0 / 110px 14px repeat-x; }
+/* 今天页点 Spend 出来的（.entry）：幕布不落，只有底下那张记一笔的升上来，后面压暗的是今天页 */
+.mn-phone.entry .mn-curtain, .mn-phone.entry .mn-veil { visibility: hidden; }
 .mn-phone .mn-pg { background: transparent; }
 .mn-phone .mn-pg:not(.mn-home) { background: #000; }
 .mn-phone .mn-home, .mn-phone .mn-pg { padding-top: calc(env(safe-area-inset-top, 0px) + 8px); }
@@ -283,6 +316,12 @@
 .spend .sp-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; margin-bottom: 18px; }
 .spend .sp-title { flex: 1 1 260px; min-width: 0; }
 .spend .sp-title h2 { margin: 0; font: 700 20px/1.2 var(--display); letter-spacing: -.02em; color: var(--mn-ink); }
+/* ‹ 标题 › ·：箭头夹着标题；那颗回到现在的小圆点只在翻到别的时期时出现 */
+.spend .sp-tnav { display: flex; align-items: center; gap: 2px; margin-left: -10px; }
+.spend .sp-tnav h2 { min-width: 0; padding: 0 2px; white-space: nowrap; }
+.spend .sp-tnav .sp-nb { padding: 2px 9px; font-size: 19px; line-height: 1.2; }
+.spend .sp-now[hidden] { display: none; }
+.spend .sp-up { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(255, 255, 255, .08); font: 600 9.5px/1.5 var(--num); letter-spacing: .07em; text-transform: uppercase; color: var(--mn-mute); vertical-align: 1px; }
 .spend .sp-status { margin: 4px 0 0; font-size: 12px; color: var(--mn-mute); }
 .spend .sp-status.bad { color: var(--mn-orange); }
 .spend .sp-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -290,9 +329,11 @@
 .spend .sp-seg > i { position: absolute; top: 2px; bottom: 2px; left: 2px; width: 0; border-radius: 999px; background: var(--mn-pri); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16); transition: left .28s var(--mn-spring), width .28s var(--mn-spring); }
 .spend .sp-seg > button { all: unset; position: relative; z-index: 1; padding: 4px 11px; border-radius: 999px; font: 600 12.5px/1.4 var(--body); color: #B9B5AC; cursor: pointer; transition: color .2s; }
 .spend .sp-seg > button.on { color: var(--mn-pri-ink); }
-.spend .sp-nav { display: inline-flex; align-items: center; }
 .spend .sp-nb { all: unset; padding: 4px 9px; border-radius: 999px; font: 600 13px/1.4 var(--body); color: #D8D4CB; cursor: pointer; transition: background .15s, opacity .15s; }
 .spend .sp-nb:disabled { opacity: .35; cursor: default; }
+/* 回到现在：一个小圆点（在别的时期时是实心青柠，已经在现在就淡掉） */
+.spend .sp-now { display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; }
+.spend .sp-now i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent, #CCFF00); }
 .spend .sp-find { display: inline-flex; align-items: center; gap: 7px; width: 210px; height: 32px; padding: 0 8px 0 11px; border-radius: 999px; background: rgba(255, 255, 255, .07); box-shadow: var(--mn-hair); color: var(--mn-mute); cursor: text; }
 .spend .sp-find .ic { width: 15px; height: 15px; flex: none; }
 .spend .sp-find input { all: unset; flex: 1; min-width: 0; font: 13px var(--body); color: var(--mn-ink); }
@@ -311,12 +352,16 @@
 }
 
 /* 一排数：一样宽的五格，竖线隔开；数是字，不是方块 */
-.spend .sp-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid var(--sp-line); border-bottom: 1px solid var(--sp-line); }
-.spend .sp-kpi { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 18px 15px; }
+.spend .sp-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--sp-line); border-bottom: 1px solid var(--sp-line); }
+.spend .sp-kpi { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 18px 15px; container-type: inline-size; }
 .spend .sp-kpi + .sp-kpi { border-left: 1px solid var(--sp-line); }
 .spend .sp-kpi:first-child { padding-left: 0; }
 .spend .sp-kl { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--mn-mute); }
-.spend .sp-kv { align-self: flex-start; font-size: 24px; font-weight: 500; }
+.spend .sp-kvw { align-self: flex-start; display: flex; align-items: baseline; max-width: 100%; font-size: 24px; font-weight: 500; white-space: nowrap; }
+/* Budget left：剩下的钱 · 剩下几成（她 10-22 要的）。格子窄了字跟着缩：9.5cqi 差不多正好放下「$12,345.67 · 100%」这么长，最小 14px */
+.spend .sp-kpi[data-k="left"] .sp-kvw { font-size: clamp(14px, 9.5cqi, 24px); }
+.spend .sp-kp:empty { display: none; }
+.spend .sp-kp::before { content: "·"; margin: 0 .3em; color: var(--mn-mute); }
 .spend .sp-kb .mn-track { max-width: 160px; }
 .spend .sp-ks { font-size: 11px; color: var(--mn-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -344,6 +389,8 @@
 .spend .sp-pills { display: inline-flex; gap: 6px; }
 .spend .sp-pill { all: unset; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px 0 11px; border-radius: 999px; background: rgba(76, 114, 216, .24); font-size: 12px; cursor: pointer; }
 .spend .sp-pill span { opacity: .7; }
+.spend .sp-pill[data-act="recent"] { padding: 0 11px; background: rgba(255, 255, 255, .08); color: #D8D4CB; }
+.spend .sp-pill[data-act="recent"].on { background: var(--mn-pri); color: var(--mn-pri-ink); }
 .spend .sp-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13.5px; }
 .spend .sp-table col.d { width: 78px; }
 .spend .sp-table col.c { width: 26%; }
@@ -425,9 +472,9 @@
 @container (max-width: 980px) {
   .spend .sp-body { grid-template-columns: minmax(0, 1fr); }
   .spend .sp-side { position: static; margin-top: 24px; padding: 18px 0 0; border-left: 0; border-top: 1px solid var(--sp-line); }
-  .spend .sp-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .spend .sp-kpi:nth-child(4) { padding-left: 0; border-left: 0; }
-  .spend .sp-kpi:nth-child(n + 4) { border-top: 1px solid var(--sp-line); }
+  .spend .sp-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .spend .sp-kpi:nth-child(3) { padding-left: 0; border-left: 0; }
+  .spend .sp-kpi:nth-child(n + 3) { border-top: 1px solid var(--sp-line); }
 }
 
 /* 设定弹窗（苦昼短自己的弹窗，里面是苦昼短的样式） */
@@ -437,6 +484,9 @@
 .sp-set .sp-setrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
 .sp-set .sp-setrow label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .sp-set .sp-bv { width: 110px; text-align: right; }
+.sp-set .sp-paste { margin: 4px 0 12px; }
+.sp-set .sp-paste summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); }
+.sp-set .sp-paste textarea { width: 100%; font: 13px/1.5 var(--num); }
 .sp-set .sp-cin { width: 100%; max-width: 240px; }
 .sp-set .mtable .sp-cin { margin-left: -10px; border-color: transparent; background: transparent; }   /* 改名框平时看着就是字，鼠标移上去、点进去才有框 */
 @media (hover: hover) { .sp-set .mtable .sp-cin:hover { border-color: var(--line); } }

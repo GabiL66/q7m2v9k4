@@ -67,6 +67,24 @@ export function shownEntries() {
 export const IX = () => { const list = shownEntries(); if (ixKey !== shKey || !ixCache) { ixCache = M.index(list, SP.cats()); ixKey = shKey; } return ixCache; };
 // 预算是按加币定的：换成看的那种
 export const budgetsShown = () => M.budgetsIn(SP.budgets(), SP.show(), RATES());
+// 当月整个预算还剩多少（她 10-24 要的）：预算 − 这个月算进预算的花销（House 两边都有，Bonds 不算；提前记的、日期还没到的也算），整数块钱。
+// 记账面板标题下面、手机今天页 Spend 左边都用它；没定预算 = null。正好 0 是灰的，超了（负的）才标橙
+export function monthLeft() {
+  const now = todayP(), B = M.budgetAt(budgetsShown(), now.y, now.m);
+  if (!B) return null;
+  const left = B - M.counted(M.sumOf(IX(), { y: now.y, m: now.m }, "month"));
+  return { text: (left < 0 ? "−" : "") + M.curInfo(M.showing()).sym + Math.round(Math.abs(left) / 100).toLocaleString("en-US"), over: left < 0 };
+}
+// 记一笔、同步回来以后：页面上所有「… left」（今天页 Spend 左边那个）换成新的数，不用整页重画
+export function paintLefts() {
+  const x = monthLeft();
+  for (const el of document.querySelectorAll("[data-mleft]")) {
+    el.hidden = !x;
+    if (!x) continue;
+    el.firstChild.textContent = x.text;
+    el.classList.toggle("over", x.over);
+  }
+}
 // 一笔的金额：照记的那种钱写；和看的那种不一样时，后面小字是换算过的
 export const amtOf = (e) => M.signed(e.v, M.curOf(e));
 export const convOf = (e) => (M.curOf(e) === SP.show() ? "" : "≈ " + M.signed(M.convert(e.v, M.curOf(e), SP.show(), RATES())));
@@ -213,7 +231,8 @@ export function createView() {
     '<div class="mn-hdr">' + btn("set", "settings", "Settings") + btn("chart", "chart", "Charts") + btn("find", "search", "Search") + "</div>" +
     // ‹ 期间 ›：标题在两个箭头正中间，下面一行是这一期的支出 / 收入
     '<div class="mn-thead">' + btn("prev", "left", "Earlier", "mn-sm") + '<div class="mn-tmid"><span class="mn-tw"><h2 class="mn-h1" data-title></h2>' + nowDot("reset", "Back to today") + "</span>" +
-    '<div class="mn-num mn-13 mn-tsub"><span class="mn-rn" data-to></span><span style="display:inline-block;width:12px"></span><span class="mn-rn" data-ti style="color:var(--mn-green)"></span>' +
+    // 支出前面一截灰的：当月（今天这个月，不管翻到哪一期）整个预算还剩多少（她 10-24 要的；没定预算不显示；超了是负的、橙色）
+    '<div class="mn-num mn-13 mn-tsub"><span class="mn-tleft" data-tlw hidden><span class="mn-rn" data-tl></span> left<span style="display:inline-block;width:12px"></span></span><span class="mn-rn" data-to></span><span style="display:inline-block;width:12px"></span><span class="mn-rn" data-ti style="color:var(--mn-green)"></span>' +
     '<button type="button" class="mn-curb" data-act="showcur" aria-label="Show totals in another currency" title="Show totals in"><span data-showc></span>' + icon("down") + "</button></div></div>" +
     btn("next", "right", "Later", "mn-sm") + "</div>" +
     '<div class="mn-seg" data-seg="mode" style="margin-top:14px"><i></i><button type="button" data-v="year">Year</button><button type="button" data-v="month">Month</button><button type="button" data-v="day">Day</button></div>' +
@@ -389,6 +408,19 @@ export function createView() {
     const g = M.sumOf(IX(), V.cur, V.mode);
     roll($("[data-to]"), "−" + M.money(g.out));
     roll($("[data-ti]"), "+" + M.money(g.inc));
+    // 当月整个预算还剩（monthLeft）
+    const ml = monthLeft(), wrap = $("[data-tlw]");
+    wrap.hidden = !ml;
+    if (ml) { roll($("[data-tl]"), ml.text); wrap.classList.toggle("over", ml.over); }
+    fitSub();
+  }
+  // 标题下面那一行（剩多少 · 支出 · 收入 · 币种）放不下：整行字缩小一点（最小 10px），不切掉数字
+  function fitSub() {
+    const sub = $(".mn-tsub"), room = sub.parentElement.clientWidth;
+    sub.style.fontSize = "";
+    if (!room) return;
+    const need = [...sub.children].reduce((w, el) => w + (el.hidden ? 0 : el.getBoundingClientRect().width), 0) + 4;
+    if (need > room) sub.style.fontSize = Math.max(10, 13 * room / need).toFixed(1) + "px";
   }
   function inView(e) { return M.inPeriod(e, V.cur, V.mode); }
   function renderChips() {
@@ -655,7 +687,7 @@ export function createView() {
   const CARDS = [["left", "Budget Left", "leftPct"], ["expense", "Expense", "expense"], ["income", "Income", "income"], ["balance", "Balance", "balance"]];
   function cards(c, mode, p) {
     const box = $(".mn-cards");
-    if (!box.querySelector("[data-card]")) box.innerHTML = CARDS.map(([k, label]) => '<div class="mn-card" data-card="' + k + '"><span class="mn-meta">' + label + '</span><span class="mn-num v"></span><div class="mn-track mn-range"><b hidden></b></div><span class="mn-num mn-meta"></span></div>').join("");
+    if (!box.querySelector("[data-card]")) box.innerHTML = CARDS.map(([k, label]) => '<div class="mn-card' + (k === "left" ? " mn-card-hl" : "") + '" data-card="' + k + '"><span class="mn-meta">' + label + '</span><span class="mn-num v"></span><div class="mn-track mn-range"><b hidden></b></div><span class="mn-num mn-meta"></span></div>').join("");
     const g = c.used, B = c.B, cmp = M.compare(IX(), budgetsShown(), p, mode, today()), pct = cmp.cur.leftPct, bal = cmp.cur.balance;
     const since = (mode === "year" ? "Earlier years" : "6 mo") + (cmp.cutText ? " " + cmp.cutText : "");
     const pctText = (x) => Math.round(x * 100) + "%";
@@ -731,6 +763,7 @@ export function createView() {
   function openChart() {
     if (V.chartOpen) return;
     V.chartOpen = true;
+    root.classList.add("mn-chart-on");   // 图表页开着：标题下面那截「… left」收起来（下面 Budget Left 方块里已经有了，她 10-25 说的）
     V.cmode = V.mode === "year" ? "year" : "month";
     V.nohouse = false;   // 每次打开都是完整的（包括 House）
     V.cc = { ...V.cur };
@@ -747,6 +780,7 @@ export function createView() {
   function closeChart() {
     if (!V.chartOpen) return;
     V.chartOpen = false;
+    root.classList.remove("mn-chart-on");
     sheetTo("", quiet() ? "" : ".26s", EXIT);
   }
   {

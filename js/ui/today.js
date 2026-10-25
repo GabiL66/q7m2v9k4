@@ -6,7 +6,7 @@ import * as store from "../store.js";
 import * as sync from "../sync.js";
 import * as E from "../engine.js";
 import { esc, on, icon } from "../dom.js";
-import { fmtDay, fmtShort, fmtMin, addDays, diffDays, weekday, startOfWeek, WEEKDAYS } from "../dates.js";
+import { fmtDay, fmtShort, fmtMin, fmtHours, hoursOf, addDays, diffDays, weekday, startOfWeek, WEEKDAYS } from "../dates.js";
 import * as S from "../stats.js";
 import * as F from "../friends.js";
 import * as I from "../ideas.js";
@@ -18,7 +18,7 @@ import * as R from "../routines.js";
 import { heroHTML, stripHTML, billHTML, colorOf, badgeOf, projectOptions, pickable, pickTarget, segHTML, lineInfo, toast, STATUS, ballHTML, taskChainHTML, groupsOf } from "./common.js";
 import { openTaskEditor } from "./editor.js";
 import { pickedId, pick, timeable, elapsed } from "./timer.js";
-import { animateNext } from "../motion.js";
+import { animateNext, slideDay } from "../motion.js";
 import { cheer } from "../fx.js";
 import { openMenu } from "./select.js";
 import { shopCount } from "./meals.js";
@@ -26,10 +26,11 @@ import { withHTML, taskMeetHTML, withText, takeWith } from "./friends.js";
 import { choreHTML } from "./chores.js";
 import { scoreHTML } from "./scores.js";
 import { quadHTML } from "./quads.js";
+import { openEntry } from "./island.js";
+import { monthLeft } from "./money.js";
 
 const openDesc = new Set();
 const logOpen = new Set();   // 已经有计时记录、又点了「+ time」要再补一段的任务
-const chainAll = new Set();  // 手机上点过「⋯」、整条链条都列出来的任务
 const seen = new Set();
 let overdueOpen = false;
 let viewDate = "";
@@ -45,9 +46,11 @@ export const shownDate = () => viewDate || store.today();
 export function showDate(d) { viewDate = d === store.today() ? "" : d; }
 
 // 计时记录：「09:10–09:40 · 30m ×」；正在计时的那个显示走着的时间。点钟点那段 = 改头尾（忘了按 / 停晚了的补救）
-export function timeEditHTML(x) {
+// t = 这段时间的任务：给了就多一个 ◆ Deep（她 10-23 要的；Deep 记在整条任务上，打开 = 这条任务的时间都算深度）。Chores 那边不给
+export function timeEditHTML(x, t = null) {
   const k = (f) => 'name="' + f + '" value="' + esc(x[f]) + '" data-keep="tm-' + f + "-" + esc(x.id) + '"';
   return '<form class="tm-edit" data-tid="' + esc(x.id) + '" autocomplete="off"><input type="time" ' + k("from") + ' aria-label="From"><span>–</span><input type="time" ' + k("to") + ' aria-label="To">' +
+    (t ? '<button type="button" class="dk-deep' + (t.deep ? " on" : "") + '" data-act="tm-deep" aria-pressed="' + Boolean(t.deep) + '" title="Deep work: focused, one thing at a time (the whole task)">◆<span>Deep</span></button>' : "") +
     '<button type="submit" class="btn">Save</button><button type="button" class="link" data-act="time-edit-x">Cancel</button></form>';
 }
 export function timeEditing() { return timeEdit; }
@@ -60,7 +63,7 @@ function timesHTML(c, t, list, form) {
   const canLog = t.status === "done" || t.status === "delay";
   if (!list.length && !live) return "";
   return '<div class="times">' + (live ? '<span class="tm live"><i></i><b class="num" data-since="' + run.start + '">' + elapsed(run.start) + "</b></span>" : "") +
-    list.map((x) => (timeEdit === x.id && x.from ? timeEditHTML(x) : '<span class="tm">' + timeRangeHTML(x) + fmtMin(x.min) +
+    list.map((x) => (timeEdit === x.id && x.from ? timeEditHTML(x, t) : '<span class="tm">' + timeRangeHTML(x) + fmtMin(x.min) +
       '<button type="button" class="tm-x" data-act="time-del" data-tid="' + x.id + '" aria-label="Delete this time">×</button></span>')).join("") +
     (list.length > 1 ? '<span class="tm sum">= ' + fmtMin(store.timeTotal(t.id)) + "</span>" : "") +
     (canLog && !form ? '<button type="button" class="tm more-time" data-act="time-more">+ time</button>' : "") + "</div>";
@@ -119,8 +122,8 @@ function rowHTML(c, t, tasks, phone = false, openId = "") {
   const run = store.timer();
   const running = run?.taskId === t.id;
   const want = open && !phone ? askFinished(t) : undefined;
-  // 展开那一行多两个小箭头：往上 / 往下挪一格（按住分钟数拖的不用拖的做法；电脑上 Alt+↑↓ 也行）
-  const k = tasks.indexOf(t), mv = open && tasks.length > 1 ? '<span class="row-mv">' +
+  // 电脑上展开那一行多两个小箭头：往上 / 往下挪一格（按住分钟数拖的不用拖的做法；Alt+↑↓ 也行）。手机上不要（她说左边按住就能拖）
+  const k = tasks.indexOf(t), mv = open && !phone && tasks.length > 1 ? '<span class="row-mv">' +
     '<button type="button" class="chip mv" data-act="row-move" data-to="-1" aria-label="Move up" title="Move up (Alt+↑)"' + (k > 0 ? "" : " disabled") + ">↑</button>" +
     '<button type="button" class="chip mv" data-act="row-move" data-to="1" aria-label="Move down" title="Move down (Alt+↓)"' + (k < tasks.length - 1 ? "" : " disabled") + ">↓</button></span>" : "";
   const chips = '<div class="chips' + (open ? "" : " hov") + '">' + STATUS.map(([s, label]) => '<button type="button" class="chip' + (t.status === s ? " on" : "") + '" data-act="status" data-s="' + s + '">' + label + "</button>").join("") +
@@ -140,7 +143,7 @@ function rowHTML(c, t, tasks, phone = false, openId = "") {
     (!open && withText(t.id) ? ' <span class="wth">' + esc(withText(t.id)) + "</span>" : "") +
     (t.desc && !desc ? '<span class="more"> ⋯</span>' : "") + "</div>" + side +
     (phone ? "" : '<button class="icon-btn" type="button" data-act="edit" aria-label="Edit task">' + icon("more") + "</button>") +
-    "</div>" + (open ? taskChainHTML(t, 2, phone && !chainAll.has(t.id) ? 3 : 0) + timesHTML(c, t, list, form) : "") +
+    "</div>" + (open ? taskChainHTML(t, 2) + timesHTML(c, t, list, form) : "") +
     (desc ? '<textarea class="desc" data-act="desc-input" data-keep="desc-' + t.id + '" placeholder="Details">' + esc(t.desc || "") + "</textarea>" : "") +
     (open || !phone ? chips : "") +
     (open && meetable(t) ? taskMeetHTML(t.id) : "") +
@@ -175,7 +178,7 @@ function noticesHTML(c) {
   if (store.local().weekSeen !== start && c.tasks.some((t) => t.date >= start && t.date <= end && E.spentMin(t) > 0)) {
     const w = S.weekCheck(c, start, end, store.setting("weekly", {}));
     if (w.warn.length) {
-      h += '<div class="note"><p><b>Last week</b> — ' + w.warn.map((x) => "<b>" + fmtMin(x.min) + "</b> " + (x.what === "growth" ? "of growth" : "to relax") + ", " + (x.dir === "low" ? "under" : "over") + " your " + fmtMin(x.limit)).join("; ") + ".</p>" +
+      h += '<div class="note"><p><b>Last week</b> — ' + w.warn.map((x) => "<b>" + fmtHours(x.min) + "</b> " + (x.what === "growth" ? "of growth" : "to relax") + ", " + (x.dir === "low" ? "under" : "over") + " your " + fmtHours(x.limit)).join("; ") + ".</p>" +
         '<button type="button" class="link" data-act="week-seen" data-week="' + start + '">Got it</button></div>';
     }
   }
@@ -241,7 +244,10 @@ function addHTML(c, d, phone = false) {
     (phone ? '<label class="deep-tog" title="Save it to Ideas instead of adding a task"><input type="checkbox" name="idea" data-keep="add-idea-' + d + '"><span>Idea</span></label>' : '<select name="repeat" aria-label="Repeat"><option value="">Doesn\'t repeat</option><option value="daily">↻ Every day</option>' +
       '<option value="weekdays">↻ Weekdays</option><option value="weekly">↻ Every ' + WEEKDAYS[weekday(d)] + "</option></select>" +
       '<select name="for" aria-label="For how long">' + R.LENGTHS.map(([v, l]) => '<option value="' + v + '"' + (v === R.DEFAULT_LENGTH ? " selected" : "") + ">for " + l + "</option>").join("") + "</select>") +
-    "</div>" + (phone ? "" : '<div class="idea-pick" data-idea-pick="' + d + '">' + pickHTML(d, document.querySelector('[data-keep="add-title-' + d + '"]')?.value || "") + "</div>") + "</form>";
+    "</div>" + (phone ? "" : '<div class="idea-pick" data-idea-pick="' + d + '">' + pickHTML(d, document.querySelector('[data-keep="add-title-' + d + '"]')?.value || "") + "</div>") + "</form>" +
+    // 手机：右下角记一笔（她要的）——点了从底下升起记账面板里那张记一笔的（js/ui/island.js 的 openEntry），不用先往下拉开记账
+    // Spend 左边灰的：当月预算还剩多少（她 10-24 要的；没定预算不显示，超了才是橙的）。记了一笔以后 main.js 的 paintLefts 换数
+    (phone ? '<div class="add-spendw">' + ((x) => '<span class="add-left num' + (x?.over ? " over" : "") + '" data-mleft' + (x ? "" : " hidden") + "><b>" + esc(x?.text || "") + "</b> left</span>")(monthLeft()) + '<button type="button" class="add-spend" data-act="spend-new" aria-label="Add a transaction" title="Add a transaction">' + icon("spending") + "<span>Spend</span></button></div>" : "");
 }
 
 // ---------- 手机：选项目 ----------
@@ -295,6 +301,30 @@ export function dayParts(c, d) {
 
 // ---------- 手机 ----------
 
+// 展开那一行的「For …」链放不下一行：自己往左滚（跑马灯，她要的「点开后就滚动播放」）。内容包进一条轨道，里面两份
+// （第二份只给眼睛看，读屏和 Tab 都跳过），轨道一圈往左挪正好一份的宽，接着从头来，看起来一直在转；开头停一下（css 关键帧的前 12%），
+// 速度按宽度算（约 28px 一秒）；手指按住就停。系统要求减少动态：不滚，照旧能横着拖着看。main.js 每次重画完调一次
+const MQ_SPEED = 28;
+export function marquees(root = document) {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  for (const p of root.querySelectorAll(".phone-day .row.open .chain:not(.ch-more):not(.mq)")) {
+    if (p.scrollWidth <= p.clientWidth + 2) continue;
+    const one = document.createElement("span");
+    one.className = "ch-copy";
+    one.append(...p.childNodes);
+    const two = one.cloneNode(true);
+    two.setAttribute("aria-hidden", "true");
+    two.querySelectorAll("button, [tabindex]").forEach((x) => { x.tabIndex = -1; });
+    const track = document.createElement("span");
+    track.className = "ch-track";
+    track.append(one, two);
+    p.append(track);
+    p.classList.add("mq");
+    p.scrollLeft = 0;
+    p.style.setProperty("--mq-dur", Math.max(6, one.getBoundingClientRect().width / MQ_SPEED / 0.88).toFixed(1) + "s");
+  }
+}
+
 const PHONE_SPAN = 5;
 
 // 一天的小圆点：全标完 = 实心；还有没标的 = 空心；没有任务 = 不画
@@ -320,11 +350,13 @@ function phoneHTML(c) {
   const days = Array.from({ length: PHONE_SPAN * 2 + 1 }, (_, i) => addDays(c.today, i - PHONE_SPAN));
   const strip = '<nav class="daystrip" aria-label="Days">' + days.map((x) =>
     '<button type="button" class="dpill' + (x === c.today ? " today" : "") + (x === d ? " on" : "") + (x < c.today ? " past" : "") + '" data-act="day-pick" data-date="' + x + '" aria-label="' + fmtDay(x) + '">' +
-    "<span>" + WEEKDAYS[weekday(x)].slice(0, 2) + "</span><b>" + Number(x.slice(8)) + "</b>" + dayDot(store.tasksOn(x)) + "</button>").join("") + "</nav>";
+    "<span>" + WEEKDAYS[weekday(x)].slice(0, 2) + "</span><b>" + Number(x.slice(8)) + "</b>" + dayDot(store.tasksOn(x)) + "</button>").join("") +
+    // 选中的标记单独一个元素，压在选中那天的格子上（换天时它滑过去，见 js/motion.js 的 slideDay）
+    '<i class="dmark" aria-hidden="true" style="--k:' + days.indexOf(d) + '"></i></nav>';
   const day = E.daySummary(c, d);
   const { line, done } = lineInfo(c, d);
-  const lineText = line > 0 ? (done >= line - 1 ? "Line " + fmtMin(line) + " ✓" : "Line " + fmtMin(line) + " · " + fmtMin(line - done) + " to go") : "";
-  const meta = '<div class="stripmeta' + (day.cap > 0 && day.planned > day.cap ? " over" : "") + '"><span>' + Math.round(day.done) + " / " + day.planned + " min done</span><span>" + lineText + "</span></div>";
+  const lineText = line > 0 ? (done >= line - 1 ? "Line " + fmtHours(line) + " ✓" : "Line " + fmtHours(line) + " · " + fmtHours(line - done) + " to go") : "";
+  const meta = '<div class="stripmeta' + (day.cap > 0 && day.planned > day.cap ? " over" : "") + '"><span>' + hoursOf(day.done) + " / " + fmtHours(day.planned) + " done</span><span>" + lineText + "</span></div>";
   const bar = '<div class="strip">' + all.map(segHTML).join("") + "</div>";
   const toBuy = shopCount(c);   // 下次采购还剩几样（顶栏的 🛒）
   return '<div class="dayview phone-day" data-date="' + d + '">' +
@@ -379,11 +411,29 @@ function refocusRow(id, act, to) {
 }
 
 export function initToday(rerender) {
+  // 跑马灯：手指按住那一条就停，松开接着滚
+  on(document, "pointerdown", ".phone-day .chain.mq", (e, p) => p.classList.add("hold"));
+  const unhold = () => document.querySelectorAll(".chain.mq.hold").forEach((p) => p.classList.remove("hold"));
+  addEventListener("pointerup", unhold);
+  addEventListener("pointercancel", unhold);
+
   on(document, "click", ".dayview [data-act]", (e, el) => {
     const act = el.dataset.act, id = rowId(el);
     // 换日子：往后翻列表往左滑，往前翻往右滑
-    const go = (d) => { if (d !== shownDate()) animateNext(d > shownDate() ? "next" : "prev"); showDate(d); rerender(); };
+    const go = (d) => {
+      const from = shownDate();
+      // 手机：自己滑（标记弹过去、清单滑进来）；电脑照旧用页面过渡
+      if (document.body.classList.contains("phone")) {
+        const was = document.querySelector(".daystrip .dmark")?.offsetLeft;
+        showDate(d); rerender();
+        if (d !== from) requestAnimationFrame(() => slideDay(was, d > from ? 1 : -1));
+        return;
+      }
+      if (d !== from) animateNext(d > from ? "next" : "prev");
+      showDate(d); rerender();
+    };
     if (act === "pj-pick") { openPicker(el, rerender); return; }
+    if (act === "spend-new") { openEntry(); return; }
     if (act !== "edit" && !act.startsWith("day-")) animateNext();
     if (act === "status") {
       logOpen.delete(id);
@@ -392,11 +442,11 @@ export function initToday(rerender) {
       store.setStatus(id, el.dataset.s);
     } else if (act === "edit") openTaskEditor(id);
     else if (act === "time-del") store.deleteTime(el.dataset.tid);
+    else if (act === "tm-deep") { const t = store.get("tasks", id); if (t) { focus = id; store.updateTask(id, { deep: !t.deep }); } }
     else if (act === "time-edit") { timeEdit = el.dataset.tid; rerender(); requestAnimationFrame(() => setTimeout(() => document.querySelector(".tm-edit [name=from]")?.focus(), 0)); }
     else if (act === "time-edit-x") { timeEdit = ""; rerender(); }
     else if (act === "time-more") { logOpen.add(id); rerender(); }
     else if (act === "row-move") { focus = id; if (moveRow(id, Number(el.dataset.to))) refocusRow(id, act, el.dataset.to); }
-    else if (act === "chain-all") { chainAll.add(id); rerender(); }
     else if (act === "time-log") logFromRow(el.closest(".row"));
     else if (act === "dish-open") { dishOpen.add(id); rerender(); requestAnimationFrame(() => setTimeout(() => document.querySelector('.dish-quick[data-task="' + CSS.escape(id) + '"] [name=name]')?.focus(), 0)); }
     else if (act === "dish-x") { const d = store.meals().dish[el.dataset.did]; if (d) store.deleteMeal("dish", d.id, "Removed " + (d.name || "it")); }
