@@ -9,8 +9,7 @@ import * as Meal from "./meals.js";
 import { esc, on, icon, initDateTyping } from "./dom.js";
 import { paintPatterns } from "./patterns.js";
 import { initFx, setFx, confetti, refreshFxColors, tintSky } from "./fx.js";
-import { toast, ballHTML } from "./ui/common.js";
-import * as L from "./lists.js";
+import { toast, lineInfo, ballHTML } from "./ui/common.js";
 import { initModal, closeModal } from "./ui/modal.js";
 import { initSelect } from "./ui/select.js";
 import { todayHTML, initToday, shownDate, showDate, marquees } from "./ui/today.js";
@@ -237,15 +236,15 @@ function paintSync() {
 }
 let wasBad = false;
 
-// 今天排的都做完了（至少三件；可选的、Chores、没标的计划那一块的头不算）：一天只庆祝一次
+// 守住今天的线：一天只庆祝一次
 function celebrate(c, view) {
   if (view !== "today" || shownDate() !== c.today) return;
-  const list = store.tasksOn(c.today).filter((t) => !t.optional && !store.isChore(t) && (t.status || !L.isContainer(c, t)));
-  if (list.length < 3 || list.some((t) => t.status !== "done")) return;
+  const { line, done } = lineInfo(c, c.today);
+  if (line < 1 || done < line - 1) return;
   if (localStorage.getItem("kuzhouduan-celebrated") === c.today) return;
   localStorage.setItem("kuzhouduan-celebrated", c.today);
   confetti();
-  toast("All done ✓ Nice.");
+  toast("Line held ✓ Nice.");
 }
 
 // ---------- 同步时机 ----------
@@ -256,10 +255,10 @@ function adoptGroups() {
   if (done) toast("Projects sorted into " + done.names.join(", "), done.undo);
 }
 
-// 同步完：今天该自己出现的排进来
+// 同步完：拍今天的安全线快照
 async function syncThenLog() {
   await sync.sync();
-  store.ensureToday();
+  store.ensureTodayLog();
   store.ensureNorthStar(store.today());   // 原来最远那一年的目标搬进 North star（只一次；等拉完表格再看，免得漏掉别的设备上的）
 }
 
@@ -269,8 +268,7 @@ function tickDay() {
   if (lookAt(store.local()) !== document.documentElement.dataset.theme) applyTheme();   // 页面开着过了六点（或点日月的那一段到头了）：换班
   if (t !== lastToday) {
     lastToday = t;
-    store.settleLists();
-    store.ensureToday();
+    store.ensureTodayLog();
     render();
   } else if (route() === "today" && (!phoneMQ.matches || store.local().url)) renderSun(store.ctx(), shownDate());   // 小太阳每分钟走一点；在计时的那段也长一点
 }
@@ -304,7 +302,7 @@ initFriends(render);
 initSun();
 
 store.subscribe((meta) => {
-  if (meta.pulled) { adoptGroups(); store.adoptMarks(); store.adoptColors(); store.settleIdeas(); store.adoptQuads(); store.adoptLists(); store.settleLists(); }
+  if (meta.pulled) { adoptGroups(); store.adoptMarks(); store.adoptColors(); store.settleIdeas(); store.adoptQuads(); }
   if (meta.local) setFx(store.local().fx !== false);
   if (!meta.quiet) render();
   else paintSync();
@@ -405,7 +403,7 @@ function autoReload() {
 setInterval(autoReload, 60000);
 
 render();
-// 今天该自己出现的、过了那天回 Pool 的，要等表格里的数据拉下来再看；连不上就 6 秒后用本机的
+// 早上的线要等表格里的数据拉下来再拍；连不上就 6 秒后用本机的
 if (sync.configured()) await Promise.race([syncThenLog(), new Promise((r) => setTimeout(r, 6000))]);
-else { adoptGroups(); store.adoptMarks(); store.adoptColors(); store.settleIdeas(); store.adoptQuads(); store.adoptLists(); store.settleLists(); }
-store.ensureToday();
+else { adoptGroups(); store.adoptMarks(); store.adoptColors(); store.settleIdeas(); store.adoptQuads(); }
+store.ensureTodayLog();

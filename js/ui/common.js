@@ -3,7 +3,6 @@
 import * as E from "../engine.js";
 import * as G from "../goals.js";
 import * as store from "../store.js";
-import * as L from "../lists.js";
 import { esc } from "../dom.js";
 import { fmtMin, fmtHours, hoursOf } from "../dates.js";
 import { zebraFor } from "../patterns.js";
@@ -61,8 +60,7 @@ export function colorOf(t) {
 }
 
 // 加任务 / 改任务 / 补时间的下拉里能选的计划：在用的，不含循环小事（那是一条重复，不是能往下挂任务的计划）。keep = 任务现在挂着的那个，留着
-// 加任务的下拉里列哪些计划：在用的，循环小事（固定星期几、Pool 里没东西）除外
-export const pickable = (projects, keep = "") => projects.filter((p) => (E.isActive(p) && (!E.isRepeat(p) || L.itemsOf(store.ctx(), p.id).length)) || (keep && p.id === keep));
+export const pickable = (projects, keep = "") => projects.filter((p) => (E.isActive(p) && !E.isRepeat(p)) || (keep && p.id === keep));
 
 // 任务旁边那个小标签：计划的名字；直接挂在大类上的、还有循环小事的那一次（它直接算在大类上），是大类的名字
 export function badgeOf(t) {
@@ -105,18 +103,53 @@ export function segHTML(t) {
   return '<i title="' + esc(t.title) + " · " + (got ? fmtMin(got) + " of " : "") + est + ' min" style="flex-grow:' + Math.max(5, len) + ";background:" + bg + '"></i>';
 }
 
-// 今天页顶上的大数字：做了多少 / 今天排了多少（各项「大概多久」加起来）· 盒子 = 那天的可用时间。
-// 以前这里是「今天的线」（按截止日倒推的份额），她 2026-10-25 换掉了
+const perDay = (v) => (v < 1 ? "<1m" : fmtMin(v));
+
+// 某天的安全线：今天用早上的快照；过去的用当天的快照；以后的现算
+export function lineInfo(c, d) {
+  let line = 0, shares = {};
+  if (d === c.today) {
+    const tl = E.todayLine(c);
+    line = tl.line; shares = tl.shares;
+  } else if (d < c.today) {
+    const e = c.log[d];
+    line = e?.need || 0; shares = e?.projects || {};
+  } else {
+    for (const p of c.projects) { const n = Math.round(E.needOn(c, p, d)); if (n > 0) shares[p.id] = n; }
+    line = Object.values(shares).reduce((a, v) => a + v, 0);
+  }
+  return { line: Math.round(line), shares, done: Math.round(E.doneOn(c, d)) };
+}
+
 export function heroHTML(c, d) {
+  const { line, shares, done } = lineInfo(c, d);
   const day = E.daySummary(c, d);
-  const scale = Math.max(day.cap, day.planned, day.done, 60);
-  const over = day.cap > 0 && day.planned > day.cap;
-  const pct = (v) => Math.min(100, (v / scale) * 100).toFixed(1) + "%";
-  return '<section class="hero free">' +
-    '<div class="hero-k">' + (d === c.today ? "Today" : "This day") + "</div>" +
-    '<div class="nums"><span class="big" data-roll="hero-' + d + '">' + hoursOf(day.done) + '</span><span class="of">/ ' + fmtHours(day.planned) + " picked</span>" +
-    '<span class="state quiet">' + (day.rest ? "Rest day" : day.cap ? "box " + fmtHours(day.cap) + (over ? " · over" : "") : "") + "</span></div>" +
-    '<div class="meter"><div class="fill" style="width:' + pct(day.done) + '"></div>' + (day.cap && day.cap < scale ? '<i class="tick" style="left:' + pct(day.cap) + '"></i>' : "") + "</div></section>";
+  const isToday = d === c.today;
+  const pct = (v, scale) => Math.min(100, (v / scale) * 100).toFixed(1) + "%";
+  if (line < 1) {
+    const scale = Math.max(day.cap, day.planned, day.done, 60);
+    return '<section class="hero free">' +
+      '<div class="hero-k">' + (isToday ? "Today" : "This day") + "</div>" +
+      '<div class="nums"><span class="big" data-roll="hero-' + d + '">' + hoursOf(day.done) + '</span><span class="of">/ ' + fmtHours(day.planned) + '</span><span class="state quiet">No project line</span></div>' +
+      '<div class="meter"><div class="fill" style="width:' + pct(day.done, scale) + '"></div></div>' +
+      '<div class="meta"><span>Nothing due from projects</span></div></section>';
+  }
+  const scale = Math.max(day.cap, line * 1.2, done, 60);
+  const held = done >= line - 1;
+  const state = held ? (done - line >= 5 ? "+" + fmtHours(done - line) + " ahead" : "Line held ✓") : fmtHours(line - done) + " to go";
+  const ahead = isToday ? E.todayAhead(c) : null;
+  // 线来自哪几个计划：只有一个的话，大字的「/ 15 min」就是它，小签只写名字；两个以上才各写各的「做了 / 要做」
+  const parts = Object.entries(shares).filter(([, v]) => v > 0).map(([pid, min]) => ({ p: store.get("projects", pid), pid, min })).filter((x) => x.p);
+  const chips = parts.map(({ p, pid, min }) => {
+    const doneP = Math.round(E.tasksOn(c, d).filter((t) => t.projectId === pid).reduce((a, t) => a + E.spentMin(t), 0));
+    return '<span class="share' + (doneP >= min - 1 ? " met" : "") + '" style="--pc:' + esc(p.color) + '"><i></i>' + esc(p.name) + (parts.length > 1 ? " <b>" + doneP + "/" + min + "m</b>" : "") + "</span>";
+  }).join("");
+  return '<section class="hero' + (held ? " held" : "") + '">' +
+    '<div class="hero-k">' + (isToday ? "Today's line" : d < c.today ? "That day's line" : "Planned line") + "</div>" +
+    '<div class="nums"><span class="big" data-roll="hero-' + d + '">' + hoursOf(done) + '</span><span class="of">/ ' + fmtHours(line) + '</span><span class="state">' + state + "</span></div>" +
+    '<div class="meter"><div class="fill" style="width:' + pct(done, scale) + '"></div><i class="tick" style="left:' + pct(line, scale) + '"></i></div>' +
+    (chips ? '<div class="shares">' + chips + "</div>" : "") +
+    (ahead ? '<div class="meta"><span></span><span>Ahead ' + fmtHours(ahead.extra) + " · " + perDay(ahead.lessPerDay) + " less a day for " + ahead.days + "d</span></div>" : "") + "</section>";
 }
 
 export function stripHTML(c, d, tasks) {
@@ -126,6 +159,19 @@ export function stripHTML(c, d, tasks) {
     '<div class="stripmeta' + (over ? " over" : "") + '"><span>' + hoursOf(day.planned) + " / " + (day.cap ? fmtHours(day.cap) : "—") + " planned" + (over ? " · over" : "") + "</span><span>" + fmtHours(day.done) + " done</span></div>";
 }
 
+export function billHTML(bill) {
+  if (!bill || bill.kind === "met") return "";
+  let text;
+  if (bill.kind === "ahead") text = "<b>Yesterday you did " + fmtHours(bill.extra) + " extra.</b> Spread over the next " + bill.days + " days — " + perDay(bill.lessPerDay) + " less a day.";
+  else if (bill.kind === "rest") text = "<b>Yesterday was a rest day.</b> Deadlines didn't move — " + perDay(bill.extraPerDay) + " more a day for " + bill.days + " days catches up.";
+  else text = "<b>Yesterday ran " + fmtHours(bill.short) + " short.</b> Spread over the next " + bill.days + " days — about +" + perDay(bill.extraPerDay) + " a day.";
+  return '<div class="bill ' + bill.kind + '">' + text + "</div>";
+}
+
+const HEALTH = { safe: "●", tight: "●", danger: "●", done: "✓", empty: "○", open: "○", waiting: "◷", dropped: "×" };
+export function healthPill(h) {
+  return '<span class="health h-' + h.level + '">' + (HEALTH[h.level] || "●") + " " + esc(h.text) + "</span>";
+}
 
 // ---------- emoji 记号（Restock 的标记、Ideas 的类别） ----------
 // tags = [[key, emoji, 名字]]。名字只在 title / aria-label 里，界面上只露 emoji。
