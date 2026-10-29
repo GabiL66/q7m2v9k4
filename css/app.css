@@ -2446,3 +2446,16 @@ html.fx-off .dock.run::after { display: none; }
 [data-theme="dark"] :is(.today-main, .pcard, .goals) > .edge-glow { display: block; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; pointer-events: none;
   background: radial-gradient(150px circle at var(--mx, -999px) var(--my, -999px), rgba(204, 255, 0, .9), transparent 70%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); }
+
+/* 北极星连线：鼠标停在某条线那头的小圆点旁边时，那条线亮一点，看得出要断的是哪条（新版） */
+.lk.pick .lk-t { stroke-dasharray: none; stroke-width: 1.6; opacity: .85; }
+[data-theme="dark"] .lk.pick .lk-t { opacity: .8; }
+
+/* Today：同一个计划当天有两条以上，画计划的头，任务缩进挂在下面（只是显示） */
+.plan-hd { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 0 4px; border-top: 1px solid var(--line); }
+.list > .plan-hd:first-child, .phone-day .plan-hd:first-child { margin-top: 0; border-top: 0; }
+.plan-hd .ph-bar { width: 4px; align-self: stretch; min-height: 16px; border-radius: 2px; background: var(--bar, var(--c-None)); }
+.plan-hd .ph-name { font-size: 15px; font-weight: 600; }
+.plan-hd .ph-meta { margin-left: auto; font-size: 12px; opacity: .6; }
+.row.under { margin-left: 12px; padding-left: 10px; border-left: 2px solid var(--line); border-top-color: transparent; }
+.row.under .pj { display: none; }

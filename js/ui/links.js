@@ -14,7 +14,12 @@
 //   白天墨色，粉、蓝两版错开一点（丝网印套色，和换页的标题一个路子）；夜里项目的霓虹色，底下一条宽的淡的当光（不用滤镜）。
 //   流光的长短、一圈多久按线的长度算，长线短线跑得一样快。同时最多 STREAKS 条带流光，多的只画轨迹。
 //   系统要求减少动态、或者 Settings 里关了 Sparkles：不跑流光，轨迹画成实线。
-// 鼠标顺着线走，线一直在；走到线旁边，线的中间出一个「×」，点了就断开（从中间断，两头缩回去）。
+// 鼠标顺着线走，线一直在；走到哪条线那头的小圆点旁边，圆点左边出一个「×」（那条线跟着亮一点，看得出断的是哪条），点了就断开（从中间断，两头缩回去）——
+//   她 2026-10-28 说的：以前「×」在线中间、鼠标离线远一点就没了，难戳。
+// 左边的（计划卡、项目的头、↻ 那几行）用鼠标选中了（出了拖的把手那个小圆点）就拿住，不轻易换、不轻易收（她 10-27 说的：太容易消失、会漂到别的线上）：
+//   要停住才选中，挪着路过的不算；拿住以后路过别的不换——在一个没连着的上面停住 REST 才换成它，连着的（亮着的）不换；
+//   鼠标在这一套占的那一片里（线的外框，加上它自己和亮着的那些）就一直在，出了那一片 HOLD 才收；点它自己、点亮着的（不是上面的按钮）也不收。
+//   右栏里的（目标、North star 的词）照旧：停一下就换，离线远了一会儿就收。
 // 拖一下建链接：悬停时旁边出一个小圆圈，从它拖出去，一条线跟着鼠标飞；能连的地方亮着，经过时吸过去，松手就连上。拖到右栏的上下沿，右栏自己滚。
 //   目标拖到目标 = 设成它的上级（一条只有一个上级，会换掉原来的；会连成环的不亮）；目标 ↔ 计划 / 项目 = 这个计划 / 项目为这条目标服务。
 //   不拖也能连：计划编辑框里的 Serves（js/ui/projects.js），改目标文字时的 Part of（js/ui/goals.js）。
@@ -31,13 +36,17 @@ const fine = matchMedia("(hover: hover) and (pointer: fine)");
 const still = matchMedia("(prefers-reduced-motion: reduce)");
 const NS = "http://www.w3.org/2000/svg";
 const DWELL = 110, GRACE = 280, STAGGER = 40, NEAR = 12;
+// 左边拿住的：换成别的要停住多久、出了那一片多久才收、停住时手抖多少还算停着、那一片四周放宽多少
+const REST = 600, HOLD = 800, STILL = 5, AREA = 24;
+// 断开的「×」：鼠标离一条线那头的小圆点多近才出来、出在圆点左边多远
+const END = 26, CUT_OFF = 15;
 // 流光：一圈 = 从起点外面滑进来、跑过整条线（pathLength 1）、再停一下；dash 的周期固定是 RUN（css 的 lk-run 从 .3 推到 -1.1，正好一个周期）
 const RUN = 1.4, SPEED = 260, STREAKS = 24;
 
 let layer = null, svg = null, handle = null, cutX = null, dragSvg = null;
 const edges = new Map();   // 画着的线：id → { e, g, pts, mask, gone, cutting }
 let cur = null;            // 悬停中：{ key, el, kb（键盘停着的：不出把手） }
-let want = "", wantT = 0, closeT = 0, clearT = 0;
+let want = "", wantT = 0, closeT = 0, clearT = 0, wx = 0, wy = 0;
 let drag = null;           // 拖着建链接：{ from, el, can: Map(元素 → key), target, id }
 let landing = null;        // 刚连上、还没换成真线的那条临时的线
 let seq = 0;
@@ -163,7 +172,6 @@ function walk(pts, f) {
   }
   return { point: pts[0], i: 0 };
 }
-const midOf = (pts) => walk(pts, 0.5).point;
 function halves(pts) {
   const { point, i } = walk(pts, 0.5), m = { x: point.x, y: point.y };
   return [[...pts.slice(0, i + 1), m], [m, ...pts.slice(i + 1)]];
@@ -504,30 +512,73 @@ function close(now = false) {
 }
 
 const keep = () => { clearTimeout(closeT); closeT = 0; };
-const later = () => { if (!closeT) closeT = setTimeout(() => close(), GRACE); };
+const later = (ms = GRACE) => { if (!closeT) closeT = setTimeout(() => close(), ms); };
+// 用鼠标选中的、在左边的：拿住
+const held = () => Boolean(cur && !cur.kb && !cur.el.closest(".pj-rail"));
 
-// 鼠标离哪条线最近（页面坐标）
+// 停在 key 上 ms 以后画它。still：离开始等的那一点挪远了 STILL 就从头等（路过的不算，要停住）；不然换了一个才从头等
+function wait(key, n, ms, still) {
+  if (key === want && (!still || Math.hypot(mx - wx, my - wy) <= STILL)) return;
+  want = key; wx = mx; wy = my;
+  clearTimeout(wantT);
+  wantT = setTimeout(() => { want = ""; if (n.isConnected && onPage() && !drag) open(key, n); }, ms);
+}
+
+// 拿住的这一套占的那一片（页面坐标）：线的外框，加上它自己和亮着的那些，四周放宽 AREA
+function within(px, py) {
+  const pts = [...edges.values()].filter((x) => !x.gone).flatMap((x) => x.pts);
+  for (const el of [cur.el, ...(page()?.querySelectorAll(".lk-on") || [])]) {
+    const b = rectOf(el);
+    if (b.r > b.l || b.b > b.t) pts.push({ x: b.l, y: b.t }, { x: b.r, y: b.b });
+  }
+  if (!pts.length) return false;
+  const r = boundsOf(pts, AREA);
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+// 鼠标离一条线多远（页面坐标）
+function distOf(x, px, py) {
+  let d0 = Infinity;
+  for (let i = 1; i < x.pts.length; i++) {
+    const a = x.pts[i - 1], b = x.pts[i], vx = b.x - a.x, vy = b.y - a.y, len = vx * vx + vy * vy || 1;
+    const t = Math.max(0, Math.min(1, ((px - a.x) * vx + (py - a.y) * vy) / len));
+    d0 = Math.min(d0, Math.hypot(a.x + t * vx - px, a.y + t * vy - py));
+  }
+  return d0;
+}
+// 鼠标离哪条线最近（NEAR 以内）
 function nearest(px, py) {
   let best = null, d0 = NEAR;
   for (const x of edges.values()) {
     if (x.gone) continue;
-    for (let i = 1; i < x.pts.length; i++) {
-      const a = x.pts[i - 1], b = x.pts[i], vx = b.x - a.x, vy = b.y - a.y, len = vx * vx + vy * vy || 1;
-      const t = Math.max(0, Math.min(1, ((px - a.x) * vx + (py - a.y) * vy) / len));
-      const d = Math.hypot(a.x + t * vx - px, a.y + t * vy - py);
-      if (d < d0) { d0 = d; best = x; }
-    }
+    const d = distOf(x, px, py);
+    if (d < d0) { d0 = d; best = x; }
+  }
+  return best;
+}
+// 鼠标在哪条线那头的小圆点旁边（END 以内）。几条线接在同一个点上时挑离鼠标最近的那条——顺着哪条过来就是哪条，它会亮起来
+function nearEnd(px, py) {
+  let best = null, d0 = Infinity;
+  for (const x of edges.values()) {
+    if (x.gone || x.cutting) continue;
+    const p = x.pts[x.pts.length - 1];
+    if (Math.hypot(p.x - px, p.y - py) > END) continue;
+    const d = distOf(x, px, py);
+    if (d < d0) { d0 = d; best = x; }
   }
   return best;
 }
 
+// 「×」放在那条线那头小圆点的左边，那条线亮一点（.pick）；x 空 = 收起
 function showCut(x) {
+  svg?.querySelectorAll(".lk.pick").forEach((g) => { if (g !== x?.g) g.classList.remove("pick"); });
   if (!x) { cutX.classList.remove("on"); return; }
-  const m = midOf(x.pts);
-  cutX.style.left = m.x + "px";
-  cutX.style.top = m.y + "px";
+  const p = x.pts[x.pts.length - 1];
+  cutX.style.left = (p.x - CUT_OFF) + "px";
+  cutX.style.top = p.y + "px";
   cutX.dataset.id = x.e.id;
   cutX.classList.add("on");
+  x.g.classList.add("pick");
 }
 
 // 断开：线从中间断开，两头各自缩回去，然后才真的删（删完重画时这条已经不在了）
@@ -551,22 +602,22 @@ function onMove() {
   const a = document.activeElement;   // 正在改字、加目标：不画
   if (a?.matches?.("input, select, textarea") && page()?.contains(a)) { close(); return; }
   const n = target?.closest?.(NODE), key = n && n.closest(".projects") ? keyOf(n) : "";
+  const hold = held();
   if (key) {
-    if (cur?.key === key) { keep(); cutX.classList.remove("on"); return; }
-    if (want !== key) {
-      want = key;
-      clearTimeout(wantT);
-      wantT = setTimeout(() => { want = ""; if (n.isConnected && onPage()) open(key, n); }, DWELL);
-    }
+    // 停在选中的那个、或者拿住时停在连着的上面：线那头的小圆点就在这些东西的左边上，凑近了出「×」
+    if (cur?.key === key || (hold && n.classList.contains("lk-on"))) { want = ""; clearTimeout(wantT); keep(); const o = layer.getBoundingClientRect(); showCut(nearEnd(mx - o.left, my - o.top)); return; }
+    if (cutX) showCut(null);
+    if (hold) wait(key, n, REST, true);
+    else wait(key, n, DWELL, !n.closest(".pj-rail"));
     if (cur) keep();
     return;
   }
   want = ""; clearTimeout(wantT);
   if (!cur) return;
-  const o = layer.getBoundingClientRect();
-  const x = nearest(mx - o.left, my - o.top);
-  showCut(x);
-  if (x) keep(); else later();
+  const o = layer.getBoundingClientRect(), px = mx - o.left, py = my - o.top;
+  const end = nearEnd(px, py);
+  showCut(end);
+  if (end || nearest(px, py) || (hold && within(px, py))) keep(); else later(hold ? HOLD : GRACE);
 }
 
 // 键盘：焦点落在目标、计划卡、项目的头（或它们里面的按钮）上，停一下就画；落到别的地方收起。正在改字的框不算
@@ -728,8 +779,13 @@ export function initLinks() {
     mx = e.clientX; my = e.clientY; target = e.target;
     if (!queued) { queued = true; requestAnimationFrame(onMove); }
   }, { passive: true });
-  // 点了别处、打字、换页：收起来（点的是把手、× 不算）
-  addEventListener("pointerdown", (e) => { if (!e.target.closest?.(".lk-ui")) close(); }, true);
+  // 点了别处、打字、换页：收起来（点的是把手、× 不算；左边拿住的，点它自己、点亮着的也不算——上面的按钮、输入框照样收）
+  addEventListener("pointerdown", (e) => {
+    const t = e.target;
+    if (t.closest?.(".lk-ui")) return;
+    if (held() && !t.closest?.("button, a, input, select, textarea, label, [contenteditable], [role=button], [data-act]") && (cur.el.contains(t) || t.closest?.(".lk-on"))) return;
+    close();
+  }, true);
   addEventListener("keydown", (e) => {
     if (drag && e.key === "Escape") { e.preventDefault(); dragEnd({ type: "cancel" }); return; }
     if (drag) return;
@@ -743,7 +799,7 @@ export function initLinks() {
   addEventListener("hashchange", () => close(true));
   // 窗口变了、滚动了（页面、右栏、North star 那段字）：每帧最多重算一次位置，不重新飞
   let raf = 0;
-  const again = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { if (cur && !drag && onPage()) { paint(cur.key, { fly: false }); if (!cur.kb) placeHandle(cur.el); cutX?.classList.remove("on"); } }); };
+  const again = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { if (cur && !drag && onPage()) { paint(cur.key, { fly: false }); if (!cur.kb) placeHandle(cur.el); if (cutX) showCut(null); } }); };
   addEventListener("resize", again);
   addEventListener("scroll", () => { if (cur && !drag) again(); }, { passive: true, capture: true });
 }

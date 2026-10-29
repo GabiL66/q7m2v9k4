@@ -155,6 +155,30 @@ function rowHTML(c, t, tasks, phone = false, openId = "") {
     "</div></div>";
 }
 
+// ---------- 同一个计划当天有两条以上：画计划的头，任务缩进挂在下面（只是显示；任务还是各自独立，有各自的计时和状态） ----------
+// 参考新版 Today（一个计划一行、下面挂它的项），但这里的任务是真任务，所以只合成一组、不改数据。只有一条的计划、没挂计划的任务照旧。
+function planHeadHTML(plan, group) {
+  const live = group.filter((t) => t.status !== "drop"), done = live.filter((t) => t.status === "done").length;
+  const sum = live.reduce((a, t) => a + (Number(t.est) || 0), 0);
+  return '<div class="plan-hd" style="--bar:' + esc(plan.color || "var(--c-None)") + '"><span class="ph-bar"></span><b class="ph-name">' + esc(plan.name) + "</b>" +
+    '<span class="ph-meta num">' + done + "/" + live.length + " · " + fmtMin(sum) + "</span></div>";
+}
+
+function listRowsHTML(c, tasks, phone, openId) {
+  const byPlan = new Map();
+  for (const t of tasks) if (t.projectId && store.get("projects", t.projectId)) byPlan.set(t.projectId, [...(byPlan.get(t.projectId) || []), t]);
+  const shown = new Set(), out = [];
+  for (const t of tasks) {
+    const g = byPlan.get(t.projectId);
+    if (!g || g.length < 2) { out.push(rowHTML(c, t, tasks, phone, openId)); continue; }
+    if (shown.has(t.projectId)) continue;
+    shown.add(t.projectId);
+    out.push(planHeadHTML(store.get("projects", t.projectId), g));
+    g.forEach((x) => out.push(rowHTML(c, x, tasks, phone, openId).replace('<div class="row ', '<div class="row under ')));
+  }
+  return out.join("");
+}
+
 // 以后某天：自动排的计划画成淡色预览（只看，不存；到那天才变成任务）
 function ghostsHTML(c, d) {
   return E.ghostsOn(c, d).map((g) => '<div class="row ghost" title="' + (g.kind === "regular" ? "Repeats — shows up on the day" : "Projected share — shows up on the day") + '">' +
@@ -293,7 +317,7 @@ export function dayParts(c, d) {
     bill: isToday ? billHTML(E.yesterdayBill(c)) : "",
     notices: isToday ? noticesHTML(c) : "",
     overdue: isToday ? overdueHTML(c) : "",
-    list: choreHTML(c, d) + '<div class="list" data-list="' + d + '">' + (tasks.length ? tasks.map((t) => rowHTML(c, t, tasks, false, openId)).join("") : E.ghostsOn(c, d).length ? "" : '<div class="empty">No tasks for this day.</div>') + ghostsHTML(c, d) + "</div>",
+    list: choreHTML(c, d) + '<div class="list" data-list="' + d + '">' + (tasks.length ? listRowsHTML(c, tasks, false, openId) : E.ghostsOn(c, d).length ? "" : '<div class="empty">No tasks for this day.</div>') + ghostsHTML(c, d) + "</div>",
     add: addHTML(c, d),
     score: scoreHTML(c, d)   // 开始日到今天才有（js/ui/scores.js）
   };
@@ -363,7 +387,7 @@ function phoneHTML(c) {
     '<header class="phead"><div class="l"><h1 data-act="day-today">' + fmtDay(d) + "</h1>" + ballHTML() + "</div>" +
     '<div class="r"><button type="button" class="psync" data-sync-status aria-label="Sync"></button><a class="pread pshop" href="#shop" aria-label="Next shop">' + icon("cart") + (toBuy ? "<span>" + toBuy + "</span>" : "") + '</a><a class="pread pico" href="#ideas" aria-label="Ideas">' + icon("idea") + '</a><a class="pread pico" href="#reading" aria-label="Reading">' + icon("reading") + "</a>" + '<a class="icon-btn pset" href="#settings" aria-label="Settings">' + icon("settings") + "</a></div></header>" + strip +
     (store.local().url ? bar + meta + choreHTML(c, d) + '<div class="list" data-list="' + d + '">' +
-      (tasks.length ? tasks.map((t) => rowHTML(c, t, tasks, true, openId)).join("") : E.ghostsOn(c, d).length ? "" : '<div class="empty">' + (d < c.today ? "Nothing was planned this day." : "Nothing planned yet.") + "</div>") + ghostsHTML(c, d) + "</div>" + addHTML(c, d, true)
+      (tasks.length ? listRowsHTML(c, tasks, true, openId) : E.ghostsOn(c, d).length ? "" : '<div class="empty">' + (d < c.today ? "Nothing was planned this day." : "Nothing planned yet.") + "</div>") + ghostsHTML(c, d) + "</div>" + addHTML(c, d, true)
       : connectHTML()) + "</div>";
 }
 
