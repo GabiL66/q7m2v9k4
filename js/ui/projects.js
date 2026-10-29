@@ -272,7 +272,7 @@ function editorHTML(p) {
   let h = '<div class="project-editor" data-pid="' + (p.id || "") + '"><h2 class="sheet-title">' + (isNew ? "New plan" : "Edit plan") + "</h2>" +
     '<div class="field-row"><label class="field"><span>Project</span><input data-pf="group" list="groups" value="' + esc(p.group || "") + '" placeholder="Work, Build…"><datalist id="groups">' + groups.map((g) => '<option value="' + esc(g) + '">').join("") + "</datalist></label>" +
     '<label class="field"><span>Plan</span><input data-pf="name" value="' + esc(p.name || "") + '" placeholder="B2 exam, Gym, Q4 report…"></label></div>' +
-    '<div class="field-row"><div class="field"><span>Kind</span>' + seg("pkind", kind, [["total", "Total"], ["regular", "Regular"]], !isNew && kind === "total") + "</div>" +
+    '<div class="field-row"><div class="field"><span>Kind</span>' + seg("pkind", kind, [["total", "Total"], ["regular", "Regular"]], false) + "</div>" +
     '<div class="field"><span>Place</span>' + seg("pplace", place, [["auto", "Auto"], ["pool", "Pool"]]) + "</div></div>" +
     '<p class="hint">' + HINT[kind + " " + place] + "</p>" +
     '<div class="field"><span>Color</span><div class="swatches">' + store.PROJECT_COLORS.map((col) => '<label><input type="radio" name="pcolor" data-pf="color" value="' + col + '"' + (p.color === col ? " checked" : "") + '><i style="background:' + col + '"></i></label>').join("") + "</div></div>" +
@@ -391,6 +391,16 @@ function regularToTotal(pid) {
   refreshProjectEditor(true);
 }
 
+// Total → Regular：Deadline / Start / 条目都留在表格里不删，只是不再用来算份额；
+// 星期几规则是空的（每天 0 分钟），转完在编辑框里填「每个星期几多少分钟」（Auto）或「每周几次、每次多久」（Pool）才会开始出现；
+// 再点回 Total 会照原样用回 Deadline / 条目
+function totalToRegular(pid) {
+  const p = store.get("projects", pid);
+  if (!p || E.isRegular(p)) return;
+  store.saveProject({ id: pid, kind: "regular", rule: { ...(p.rule?.deep ? { deep: true } : {}) } });
+  refreshProjectEditor(true);
+}
+
 export function initProjects(rerender) {
   on(document, "click", ".projects [data-act], .project-editor [data-act]", (e, el) => {
     const act = el.dataset.act;
@@ -410,7 +420,7 @@ export function initProjects(rerender) {
       readDraft(el.closest(".project-editor"));
       draft[act === "pkind" ? "kind" : "place"] = el.dataset.v;
       redrawDraft();
-    } else if (act === "pkind") { if (el.dataset.v === "total") regularToTotal(pid); }
+    } else if (act === "pkind") { if (el.dataset.v === "total") regularToTotal(pid); else if (el.dataset.v === "regular") totalToRegular(pid); }
     else if (act === "pplace") store.saveProject({ id: pid, place: el.dataset.v });
     else if (act === "toggle-archived") { if (!openArchived.delete(group)) openArchived.add(group); rerender(); }
     else if (act === "archive-plan") { const p = store.get("projects", pid); if (p) store.archiveProject(pid, E.isActive(p)); }
