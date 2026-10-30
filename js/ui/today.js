@@ -161,17 +161,25 @@ function rowHTML(c, t, tasks, phone = false, openId = "") {
 // 只有一条的计划、没挂计划的任务照旧。
 const sizeOf = (m) => { const v = Math.round(Number(m) || 0); return v <= 0 ? "" : v < 60 ? v + "m" : Math.floor(v / 60) + "h" + (v % 60 ? String(v % 60).padStart(2, "0") : ""); };
 
-function grpLineHTML(t) {
-  const done = t.status === "done", spent = store.timeTotal(t.id);
-  return '<div class="ls-ln' + (t.status ? " " + t.status : "") + '"><button type="button" class="ls-cb" data-act="grp-tick" data-line="' + t.id + '" aria-pressed="' + done + '" aria-label="' + esc((done ? "Not done: " : "Done: ") + t.title) + '">✓</button>' +
-    '<button type="button" class="ls-tx" data-act="grp-open" data-line="' + t.id + '">' + esc(t.title) + (t.status === "delay" ? " <small>delayed</small>" : "") + "</button>" +
-    '<span class="ls-sz">' + (spent ? fmtMin(spent) + " logged" : sizeOf(t.est)) + "</span></div>";
+function grpLineHTML(c, t, open) {
+  const done = t.status === "done", spent = store.timeTotal(t.id), run = store.timer(), running = run?.taskId === t.id;
+  const picked = timeable(t, c.today) && pickedId(c) === t.id;
+  const right = running ? '<span class="ls-sz live"><i></i><b class="num" data-since="' + run.start + '">' + elapsed(run.start) + "</b></span>" : '<span class="ls-sz">' + (spent ? fmtMin(spent) + " logged" : sizeOf(t.est)) + "</span>";
+  return '<div class="ls-ln' + (t.status ? " " + t.status : "") + (picked ? " picked" : "") + (open ? " open" : "") + '"><button type="button" class="ls-cb" data-act="grp-tick" data-line="' + t.id + '" aria-pressed="' + done + '" aria-label="' + esc((done ? "Not done: " : "Done: ") + t.title) + '">✓</button>' +
+    '<button type="button" class="ls-tx" data-act="grp-open" data-line="' + t.id + '">' + esc(t.title) + (t.status === "delay" ? " <small>delayed</small>" : "") + "</button>" + right + "</div>";
+}
+
+// 展开的那条：小行（方框、名字、分钟）一直在，完整的内容（状态按钮、记时、说明）挂在它下面；完整内容自己的标题和「…」藏起来，编辑放进按钮那一排
+function grpDetailHTML(c, t, tasks, phone, openId) {
+  const html = rowHTML(c, t, tasks, phone, openId).replace('<div class="row ', '<div class="row under ');
+  const at = html.indexOf('<div class="chips'), end = at < 0 ? -1 : html.indexOf("</div>", at);
+  return phone || end < 0 ? html : html.slice(0, end) + '<button type="button" class="chip" data-act="edit">Edit</button>' + html.slice(end);
 }
 
 function planBlockHTML(c, plan, group, tasks, phone, openId) {
   const live = group.filter((t) => t.status !== "drop"), done = live.filter((t) => t.status === "done").length;
-  const sum = live.reduce((a, t) => a + (Number(t.est) || 0), 0), run = store.timer()?.taskId;
-  const lines = group.map((t) => (t.id === openId || t.id === run ? rowHTML(c, t, tasks, phone, openId).replace('<div class="row ', '<div class="row under ') : grpLineHTML(t))).join("");
+  const sum = live.reduce((a, t) => a + (Number(t.est) || 0), 0);
+  const lines = group.map((t) => { const open = t.id === openId; return '<div class="ls-item' + (open ? " open" : "") + '">' + grpLineHTML(c, t, open) + (open ? grpDetailHTML(c, t, tasks, phone, openId) : "") + "</div>"; }).join("");
   return '<div class="row plan grp" data-grp="' + esc(plan.id) + '"><div class="est num"><b>' + (sizeOf(sum) || "—") + "</b></div>" +
     '<div class="bar" style="--bar:' + esc(plan.color || "var(--c-None)") + '"></div>' +
     '<div class="body"><div class="line"><div class="task">' + esc(plan.name) + '</div><span class="rside"><b class="ls-cnt num">' + done + "/" + live.length + "</b></span></div>" +
@@ -545,6 +553,7 @@ export function initToday(rerender) {
   });
   on(document, "click", ".dayview [data-act=grp-open]", (e, el) => {
     const id = el.dataset.line, c = store.ctx();
+    if (el.closest(".ls-item")?.classList.contains("open")) { if (openDesc.has(id)) openDesc.delete(id); else openDesc.add(id); }
     focus = id;
     if (timeable(store.get("tasks", id), c.today) && pickedId(c) !== id) pick(id);
     animateNext();

@@ -2476,6 +2476,9 @@ body.phone .ls-cb { width: 19px; height: 19px; font-size: 12px; }
 .ls-ln .ls-tx small { margin-left: 4px; font-size: 11.5px; color: var(--muted); }
 .ls-ln.done .ls-tx, .ls-ln.delay .ls-tx { color: var(--muted); text-decoration: line-through; }
 .ls-ln.drop { opacity: .5; }
-/* 展开 / 正在计时的那条：完整的一行挂在块里，不再画左边的分钟格和竖线（竖线只有块那一条） */
-.row.grp .row.under { margin: 4px 0 6px; padding: 6px 8px; border-top: 0; border-radius: 12px; background: var(--surface); }
-.row.grp .row.under > .est, .row.grp .row.under > .bar { display: none; }
+/* 展开的那条：小行一直在，下面挂完整的内容（对齐名字，缩进一个方框宽）；它自己的分钟格、竖线、标题行都不画 */
+.row.grp .row.under, .row.grp .row.under.picked, .row.grp .row.under.open { margin: 0 0 8px 30px; padding: 2px 0 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
+.row.grp .row.under > .est, .row.grp .row.under > .bar, .row.grp .row.under .line { display: none; }
+.ls-item.open .ls-ln .ls-tx, .ls-ln.picked .ls-tx { font-weight: 600; }
+.ls-sz.live { display: inline-flex; align-items: center; gap: 5px; }
+.ls-sz.live i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent, #C6FF00); }
