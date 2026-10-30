@@ -155,13 +155,27 @@ function rowHTML(c, t, tasks, phone = false, openId = "") {
     "</div></div>";
 }
 
-// ---------- 同一个计划当天有两条以上：画计划的头，任务缩进挂在下面（只是显示；任务还是各自独立，有各自的计时和状态） ----------
-// 参考新版 Today（一个计划一行、下面挂它的项），但这里的任务是真任务，所以只合成一组、不改数据。只有一条的计划、没挂计划的任务照旧。
-function planHeadHTML(plan, group) {
+// ---------- 同一个计划当天有两条以上：合成一块（新版 Today 的样子） ----------
+// 一条计划色的竖线（在原来那条竖线的位置）、左边是下面几条加起来的分钟、右边是做了几条 / 几条，下面每条任务一小行（方框 + 名字 + 分钟）。
+// 只是显示：每条任务还是独立的真任务（有自己的计时、状态、编辑）。点方框 = 标 Done（再点取消）；点名字 = 展开成完整的一行（正在计时的也直接展开）。
+// 只有一条的计划、没挂计划的任务照旧。
+const sizeOf = (m) => { const v = Math.round(Number(m) || 0); return v <= 0 ? "" : v < 60 ? v + "m" : Math.floor(v / 60) + "h" + (v % 60 ? String(v % 60).padStart(2, "0") : ""); };
+
+function grpLineHTML(t) {
+  const done = t.status === "done", spent = store.timeTotal(t.id);
+  return '<div class="ls-ln' + (t.status ? " " + t.status : "") + '"><button type="button" class="ls-cb" data-act="grp-tick" data-line="' + t.id + '" aria-pressed="' + done + '" aria-label="' + esc((done ? "Not done: " : "Done: ") + t.title) + '">✓</button>' +
+    '<button type="button" class="ls-tx" data-act="grp-open" data-line="' + t.id + '">' + esc(t.title) + (t.status === "delay" ? " <small>delayed</small>" : "") + "</button>" +
+    '<span class="ls-sz">' + (spent ? fmtMin(spent) + " logged" : sizeOf(t.est)) + "</span></div>";
+}
+
+function planBlockHTML(c, plan, group, tasks, phone, openId) {
   const live = group.filter((t) => t.status !== "drop"), done = live.filter((t) => t.status === "done").length;
-  const sum = live.reduce((a, t) => a + (Number(t.est) || 0), 0);
-  return '<div class="plan-hd" style="--bar:' + esc(plan.color || "var(--c-None)") + '"><span class="ph-bar"></span><b class="ph-name">' + esc(plan.name) + "</b>" +
-    '<span class="ph-meta num">' + done + "/" + live.length + " · " + fmtMin(sum) + "</span></div>";
+  const sum = live.reduce((a, t) => a + (Number(t.est) || 0), 0), run = store.timer()?.taskId;
+  const lines = group.map((t) => (t.id === openId || t.id === run ? rowHTML(c, t, tasks, phone, openId).replace('<div class="row ', '<div class="row under ') : grpLineHTML(t))).join("");
+  return '<div class="row plan grp" data-grp="' + esc(plan.id) + '"><div class="est num"><b>' + (sizeOf(sum) || "—") + "</b></div>" +
+    '<div class="bar" style="--bar:' + esc(plan.color || "var(--c-None)") + '"></div>' +
+    '<div class="body"><div class="line"><div class="task">' + esc(plan.name) + '</div><span class="rside"><b class="ls-cnt num">' + done + "/" + live.length + "</b></span></div>" +
+    '<div class="ls-lines">' + lines + "</div></div></div>";
 }
 
 function listRowsHTML(c, tasks, phone, openId) {
@@ -173,8 +187,7 @@ function listRowsHTML(c, tasks, phone, openId) {
     if (!g || g.length < 2) { out.push(rowHTML(c, t, tasks, phone, openId)); continue; }
     if (shown.has(t.projectId)) continue;
     shown.add(t.projectId);
-    out.push(planHeadHTML(store.get("projects", t.projectId), g));
-    g.forEach((x) => out.push(rowHTML(c, x, tasks, phone, openId).replace('<div class="row ', '<div class="row under ')));
+    out.push(planBlockHTML(c, store.get("projects", t.projectId), g, tasks, phone, openId));
   }
   return out.join("");
 }
@@ -520,6 +533,20 @@ export function initToday(rerender) {
     }
     if (!e.target.closest("[data-act=desc]")) return;
     if (openDesc.has(id)) openDesc.delete(id); else openDesc.add(id);
+    animateNext();
+    rerender();
+  });
+
+  // 计划那一块里的小行：方框 = 标 Done（再点取消）；名字 = 展开成完整的一行（和点一整行一样：选中它，能计时）
+  on(document, "click", ".dayview [data-act=grp-tick]", (e, el) => {
+    const id = el.dataset.line;
+    if (store.get("tasks", id)?.status !== "done") cheer(el, "done");
+    store.setStatus(id, "done");
+  });
+  on(document, "click", ".dayview [data-act=grp-open]", (e, el) => {
+    const id = el.dataset.line, c = store.ctx();
+    focus = id;
+    if (timeable(store.get("tasks", id), c.today) && pickedId(c) !== id) pick(id);
     animateNext();
     rerender();
   });

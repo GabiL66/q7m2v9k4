@@ -2451,11 +2451,31 @@ html.fx-off .dock.run::after { display: none; }
 .lk.pick .lk-t { stroke-dasharray: none; stroke-width: 1.6; opacity: .85; }
 [data-theme="dark"] .lk.pick .lk-t { opacity: .8; }
 
-/* Today：同一个计划当天有两条以上，画计划的头，任务缩进挂在下面（只是显示） */
-.plan-hd { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 0 4px; border-top: 1px solid var(--line); }
-.list > .plan-hd:first-child, .phone-day .plan-hd:first-child { margin-top: 0; border-top: 0; }
-.plan-hd .ph-bar { width: 4px; align-self: stretch; min-height: 16px; border-radius: 2px; background: var(--bar, var(--c-None)); }
-.plan-hd .ph-name { font-size: 15px; font-weight: 600; }
-.plan-hd .ph-meta { margin-left: auto; font-size: 12px; opacity: .6; }
-.row.under { margin-left: 12px; padding-left: 10px; border-left: 2px solid var(--line); border-top-color: transparent; }
-.row.under .pj { display: none; }
+/* Today：同一个计划当天有两条以上，合成一块（新版的样子；样式照搬新版的 .ls-*） */
+.row.plan .task { font-weight: 700; }
+.row.plan .est b { font-size: 12.5px; letter-spacing: -.02em; }
+.ls-cnt { font-size: 12px; font-weight: 600; color: var(--muted); }
+.ls-lines { margin: 5px 0 2px; }
+.ls-ln, .ls-step { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 13.5px; }
+.ls-step { font-size: 13px; }
+.ls-cb { position: relative; flex: none; width: 15px; height: 15px; display: grid; place-items: center; padding: 0; border: 1.5px solid var(--muted); border-radius: 4px; background: transparent; color: transparent; font-size: 10px; line-height: 1; }
+.ls-cb::after { content: ""; position: absolute; inset: -6px; }   /* 手指好点：点得到的地方比画出来的大一圈 */
+.ls-ln.done > .ls-cb, .ls-step.done > .ls-cb { border-color: var(--ink); background: var(--ink); color: var(--accent); }
+[data-theme="dark"] .ls-ln.done > .ls-cb, [data-theme="dark"] .ls-step.done > .ls-cb { border-color: var(--accent); background: var(--accent); color: var(--bg); }
+.ls-ln .ls-tx { flex: 1; min-width: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.ls-step .ls-tx { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ls-ln .ls-tx small { margin-left: 4px; font-size: 11.5px; color: var(--muted); }
+.ls-ln.done .ls-tx, .ls-step.done .ls-tx, .ls-ln.delay .ls-tx { color: var(--muted); text-decoration: line-through; }
+.ls-ln.drop { opacity: .5; }
+.ls-sz { flex: none; font: 500 12px var(--num); color: var(--muted); white-space: nowrap; }
+.ls-steps { margin: 2px 0 6px 7px; padding-left: 15px; border-left: 1px solid var(--line); }
+body.phone .ls-ln, body.phone .ls-step { min-height: 30px; font-size: 14.5px; }
+body.phone .ls-cb { width: 19px; height: 19px; font-size: 12px; }
+.row.plan.grp .line { align-items: baseline; }
+.row.plan.grp .rside { margin-left: auto; }
+.ls-ln .ls-tx small { margin-left: 4px; font-size: 11.5px; color: var(--muted); }
+.ls-ln.done .ls-tx, .ls-ln.delay .ls-tx { color: var(--muted); text-decoration: line-through; }
+.ls-ln.drop { opacity: .5; }
+/* 展开 / 正在计时的那条：完整的一行挂在块里，不再画左边的分钟格和竖线（竖线只有块那一条） */
+.row.grp .row.under { margin: 4px 0 6px; padding: 6px 8px; border-top: 0; border-radius: 12px; background: var(--surface); }
+.row.grp .row.under > .est, .row.grp .row.under > .bar { display: none; }
